@@ -6,7 +6,7 @@ import {
   readJson,
   samePath,
   writeJson,
-} from "./common.js";
+} from "./config.js";
 
 let changed = false;
 

@@ -8,7 +8,7 @@ import {
   samePath,
   shimPath,
   writeJson,
-} from "./common.js";
+} from "./config.js";
 
 // Note: npm also runs this as the "install" lifecycle hook during a plain
 // `npm install`, so checking out the repo and installing dependencies

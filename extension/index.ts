@@ -224,6 +224,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     }
   }
 
+  function notifyTui(message: string): void {
+    if (latestCtx?.mode !== "tui") return;
+    try {
+      latestCtx.ui.notify(message, "info");
+    } catch (err) {
+      debugLog(`notifyTui failed: ${String(err)}`);
+    }
+  }
+
   function notifyEvent(message: string): void {
     send({
       type: "extension_ui_request",
@@ -430,6 +439,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       detach();
     });
     debugLog("client connected");
+    notifyTui("Paseo attached to this session");
     // Prime Paseo's user-entry capture, mirroring what its injected
     // extension does on session_start.
     emitEntryCapture(latestCtx, "session_start");
@@ -515,6 +525,46 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     currentSessionFile = sessionFile;
   }
 
+  const agentMapFile = path.join(os.homedir(), ".pi", "paseo-bridge", "agents.json");
+
+  function agentMapKey(sessionFile: string): string {
+    const resolved = path.resolve(sessionFile);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  }
+
+  function readAgentMap(): Record<string, string> {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(agentMapFile, "utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeAgentMapEntry(sessionFile: string, agentId: string): void {
+    try {
+      fs.mkdirSync(path.dirname(agentMapFile), { recursive: true });
+      const map = readAgentMap();
+      map[agentMapKey(sessionFile)] = agentId;
+      fs.writeFileSync(agentMapFile, `${JSON.stringify(map, null, 2)}\n`);
+    } catch (err) {
+      debugLog(`could not persist agent map: ${String(err)}`);
+    }
+  }
+
+  function adoptAgent(agentId: string, reused: boolean): void {
+    currentAgentId = agentId;
+    debugLog(`paseo agent id: ${agentId}${reused ? " (reused)" : ""}`);
+    // Align Paseo's cached model/thinking with the TUI's live values. The
+    // import-time descriptor scan can be stale or empty.
+    pushAgentConfigToPaseo("model", modelToId(latestCtx?.model));
+    pushAgentConfigToPaseo("thinking", pi.getThinkingLevel() ?? null);
+    notifyTui(reused ? "Session reconnected in Paseo" : "Session imported into Paseo");
+    // Resumed sessions already have history (and possibly a name); sync the
+    // title now instead of waiting for the next turn.
+    if (latestCtx) void maybeGenerateSessionTitle(latestCtx);
+  }
+
   function registerWithPaseo(sessionFile: string, cwd: string): void {
     if (process.env.PI_PASEO_BRIDGE_NO_IMPORT) return;
     if (importAttempted.has(sessionFile)) return;
@@ -524,26 +574,57 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       debugLog("paseo CLI not found; session will not auto-appear (set PASEO_CLI)");
       return;
     }
-    const args = ["import", "--provider", "pi", sessionFile, "--cwd", cwd, "--json"];
-    if (process.env.PASEO_HOST) args.push("--host", process.env.PASEO_HOST);
-    runPaseoCli(cli, args, (code, output) => {
-      debugLog(`paseo import exited ${code}: ${output.slice(0, 500)}`);
-      if (code !== 0) return;
+    const hostArgs = process.env.PASEO_HOST ? ["--host", process.env.PASEO_HOST] : [];
+    const runImport = () => {
+      const args = ["import", "--provider", "pi", sessionFile, "--cwd", cwd, "--json", ...hostArgs];
+      runPaseoCli(cli, args, (code, output) => {
+        debugLog(`paseo import exited ${code}: ${output.slice(0, 500)}`);
+        if (code !== 0) return;
+        try {
+          const jsonStart = output.indexOf("{");
+          if (jsonStart === -1) return;
+          const result = JSON.parse(output.slice(jsonStart));
+          if (typeof result.agentId === "string" && result.agentId) {
+            writeAgentMapEntry(sessionFile, result.agentId);
+            adoptAgent(result.agentId, false);
+          }
+        } catch (err) {
+          debugLog(`could not parse import output: ${String(err)}`);
+        }
+      });
+    };
+    // Re-importing a session Paseo already knows creates a duplicate agent,
+    // so check the last known agent for this session file first.
+    const knownAgentId = readAgentMap()[agentMapKey(sessionFile)];
+    if (!knownAgentId) {
+      runImport();
+      return;
+    }
+    runPaseoCli(cli, ["inspect", knownAgentId, "--json", ...hostArgs], (code, output) => {
+      let exists = false;
       try {
-        const jsonStart = output.indexOf("{");
-        if (jsonStart === -1) return;
-        const result = JSON.parse(output.slice(jsonStart));
-        if (typeof result.agentId === "string" && result.agentId) {
-          currentAgentId = result.agentId;
-          debugLog(`paseo agent id: ${currentAgentId}`);
-          // Align Paseo's cached model/thinking with the TUI's live values.
-          // The import-time descriptor scan can be stale or empty.
-          pushAgentConfigToPaseo("model", modelToId(latestCtx?.model));
-          pushAgentConfigToPaseo("thinking", pi.getThinkingLevel() ?? null);
+        if (code === 0) {
+          const jsonStart = output.indexOf("{");
+          const info = jsonStart === -1 ? null : JSON.parse(output.slice(jsonStart));
+          exists = Boolean(info) && info.Archived !== true;
         }
       } catch (err) {
-        debugLog(`could not parse import output: ${String(err)}`);
+        debugLog(`inspect of known agent failed: ${String(err)}`);
       }
+      if (!exists) {
+        runImport();
+        return;
+      }
+      // The daemon's provider session for this agent died with the previous
+      // TUI process; reload restarts it so it reattaches to the new pipe.
+      runPaseoCli(cli, ["agent", "reload", knownAgentId, "--json", ...hostArgs], (reloadCode, reloadOutput) => {
+        debugLog(`paseo agent reload exited ${reloadCode}: ${reloadOutput.slice(0, 200)}`);
+        if (reloadCode === 0) {
+          adoptAgent(knownAgentId, true);
+        } else {
+          runImport();
+        }
+      });
     });
   }
 
@@ -591,8 +672,16 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   async function maybeGenerateSessionTitle(ctx: ExtensionContext): Promise<void> {
     if (titleAttempted || !currentAgentId) return;
     if (process.env.PI_PASEO_BRIDGE_NO_TITLE) return;
-    if (ctx.sessionManager.getSessionName()) {
+    const existingName = ctx.sessionManager.getSessionName();
+    if (existingName) {
+      // Session already named (by the user or a previous run) - just make
+      // sure Paseo shows it.
       titleAttempted = true;
+      const agentId = currentAgentId;
+      paseoSessionRequest(
+        (requestId) => ({ type: "update_agent_request", agentId, name: existingName, requestId }),
+        `title "${existingName}" (existing)`,
+      );
       return;
     }
     const firstMessage = capturedUserEntries(ctx)[0]?.text?.trim();
