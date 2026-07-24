@@ -1,3 +1,4 @@
+import os from "node:os";
 import {
   extensionDir,
   isOurShimCommand,
@@ -18,7 +19,14 @@ import {
 // extension discovery itself and runs npm install in the package dir - do
 // nothing there, or the extension would be registered twice.
 const normalizedDir = norm(extensionDir).toLowerCase();
-if (normalizedDir.includes("/.pi/agent/git/") || normalizedDir.includes("/.pi/agent/npm/") || normalizedDir.includes("/.pi/git/") || normalizedDir.includes("/.pi/npm/")) {
+const tmpDir = norm(os.tmpdir()).toLowerCase();
+const piManaged =
+  normalizedDir.includes("/.pi/agent/git/") ||
+  normalizedDir.includes("/.pi/agent/npm/") ||
+  normalizedDir.includes("/.pi/git/") ||
+  normalizedDir.includes("/.pi/npm/") ||
+  normalizedDir.startsWith(`${tmpDir}/`);
+if (piManaged) {
   console.log("paseo-bridge-pi: installed as a pi package. Run /paseo-bridge install inside pi to set up the Paseo shim.");
   process.exit(0);
 }
