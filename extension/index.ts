@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -49,6 +50,93 @@ function debugLog(message: string): void {
   } catch {
     // never let logging break the TUI
   }
+}
+
+const bridgeSettingsFile = path.join(os.homedir(), ".pi", "paseo-bridge", "settings.json");
+
+function readBridgeSettings(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(bridgeSettingsFile, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeBridgeSettings(patch: Record<string, unknown>): void {
+  fs.mkdirSync(path.dirname(bridgeSettingsFile), { recursive: true });
+  fs.writeFileSync(bridgeSettingsFile, `${JSON.stringify({ ...readBridgeSettings(), ...patch }, null, 2)}\n`);
+}
+
+function isAutoEnabled(): boolean {
+  return readBridgeSettings().auto !== false;
+}
+
+function bridgeShimPath(): string {
+  // extension/index.ts lives in <package root>/extension/
+  let here: string;
+  try {
+    here = path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    here = __dirname;
+  }
+  return path.join(path.dirname(here), "shim", "pi-paseo-shim.js");
+}
+
+const paseoConfigFile = path.join(os.homedir(), ".paseo", "config.json");
+
+function isOurShimCommand(command: unknown): boolean {
+  return (
+    Array.isArray(command) &&
+    command.some(
+      (part) => typeof part === "string" && part.replaceAll("\\", "/").toLowerCase().endsWith("/shim/pi-paseo-shim.js"),
+    )
+  );
+}
+
+// Returns a user-facing result message. Throws only on unreadable JSON.
+function installShimIntoPaseoConfig(): { ok: boolean; message: string } {
+  const config = fs.existsSync(paseoConfigFile) ? JSON.parse(fs.readFileSync(paseoConfigFile, "utf8")) : {};
+  config.agents = config.agents ?? {};
+  config.agents.providers = config.agents.providers ?? {};
+  const current = config.agents.providers.pi?.command;
+  if (isOurShimCommand(current)) {
+    return { ok: true, message: "Paseo shim already installed" };
+  }
+  if (current) {
+    return {
+      ok: false,
+      message: `Paseo config already overrides the pi provider command (${JSON.stringify(current)}). Remove agents.providers.pi.command from ~/.paseo/config.json first.`,
+    };
+  }
+  config.agents.providers.pi = {
+    ...(config.agents.providers.pi ?? {}),
+    command: [process.execPath.replaceAll("\\", "/"), bridgeShimPath().replaceAll("\\", "/")],
+  };
+  fs.mkdirSync(path.dirname(paseoConfigFile), { recursive: true });
+  fs.writeFileSync(paseoConfigFile, `${JSON.stringify(config, null, 2)}\n`);
+  return { ok: true, message: "Paseo shim installed. Restart the Paseo daemon to apply: paseo restart" };
+}
+
+function uninstallShimFromPaseoConfig(): { ok: boolean; message: string } {
+  if (!fs.existsSync(paseoConfigFile)) return { ok: true, message: "Paseo shim was not installed" };
+  const config = JSON.parse(fs.readFileSync(paseoConfigFile, "utf8"));
+  const piProvider = config?.agents?.providers?.pi;
+  if (!piProvider || !piProvider.command) {
+    return { ok: true, message: "Paseo shim was not installed" };
+  }
+  if (!isOurShimCommand(piProvider.command)) {
+    return {
+      ok: false,
+      message: `Leaving Paseo config untouched - the pi provider command is not the bridge shim: ${JSON.stringify(piProvider.command)}`,
+    };
+  }
+  delete piProvider.command;
+  if (Object.keys(piProvider).length === 0) delete config.agents.providers.pi;
+  if (Object.keys(config.agents.providers).length === 0) delete config.agents.providers;
+  if (Object.keys(config.agents).length === 0) delete config.agents;
+  fs.writeFileSync(paseoConfigFile, `${JSON.stringify(config, null, 2)}\n`);
+  return { ok: true, message: "Paseo shim removed. Restart the Paseo daemon to apply: paseo restart" };
 }
 
 function decodeCommandPayload(raw: string): Record<string, unknown> | null {
@@ -221,7 +309,6 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           debugLog(`paseo sync sending ${String(message.type ?? "unknown")} (requestId=${requestId})`);
           ws.send(JSON.stringify({ type: "session", message }));
         });
-      }
       },
       close() {
         try {
@@ -702,18 +789,25 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     });
   }
 
+  function connectSession(ctx: ExtensionContext): string {
+    const file = ctx.sessionManager.getSessionFile();
+    if (!file) return "This session is ephemeral (--no-session); nothing to bridge.";
+    if (file !== currentSessionFile) {
+      stopServer();
+      startServer(file);
+    }
+    importAttempted.delete(file);
+    registerWithPaseo(file, ctx.cwd);
+    return "Connecting session to Paseo...";
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     latestCtx = ctx;
     try {
       const force = ["1", "true", "on"].includes((process.env.PI_PASEO_BRIDGE_FORCE ?? "").toLowerCase());
       if (ctx.mode !== "tui" && !force) return;
-      const file = ctx.sessionManager.getSessionFile();
-      if (!file) return; // ephemeral session
-      if (file !== currentSessionFile) {
-        stopServer();
-        startServer(file);
-      }
-      registerWithPaseo(file, ctx.cwd);
+      if (!isAutoEnabled()) return;
+      connectSession(ctx);
     } catch (err) {
       debugLog(`session_start failed: ${String(err)}`);
     }
@@ -843,5 +937,69 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       return;
     }
     pushAgentConfigToPaseo("thinking", event.level ?? null);
+  });
+
+  pi.registerCommand("paseo-bridge", {
+    description: "Manage the Paseo bridge: install | uninstall | auto [on|off] | connect | disconnect | status",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      const sub = parts[0] ?? "status";
+      try {
+        switch (sub) {
+          case "install": {
+            const result = installShimIntoPaseoConfig();
+            ctx.ui.notify(result.message, result.ok ? "info" : "error");
+            return;
+          }
+          case "uninstall": {
+            const result = uninstallShimFromPaseoConfig();
+            ctx.ui.notify(result.message, result.ok ? "info" : "error");
+            return;
+          }
+          case "auto": {
+            const value = parts[1]?.toLowerCase();
+            if (value !== "on" && value !== "off") {
+              ctx.ui.notify(`Auto-connect is ${isAutoEnabled() ? "on" : "off"}. Use /paseo-bridge auto on|off to change.`, "info");
+              return;
+            }
+            writeBridgeSettings({ auto: value === "on" });
+            ctx.ui.notify(`Auto-connect ${value}: new TUI sessions will ${value === "on" ? "" : "not "}appear in Paseo automatically.`, "info");
+            return;
+          }
+          case "connect":
+            ctx.ui.notify(connectSession(ctx), "info");
+            return;
+          case "disconnect":
+            if (!server) {
+              ctx.ui.notify("Bridge is not connected.", "info");
+              return;
+            }
+            stopServer();
+            ctx.ui.notify("Bridge disconnected. Use /paseo-bridge connect to reattach.", "info");
+            return;
+          case "status": {
+            let shimInstalled = false;
+            try {
+              shimInstalled = isOurShimCommand(
+                JSON.parse(fs.readFileSync(paseoConfigFile, "utf8"))?.agents?.providers?.pi?.command,
+              );
+            } catch {
+              // unreadable config counts as not installed
+            }
+            const lines = [
+              `shim: ${shimInstalled ? "installed" : "not installed (run /paseo-bridge install)"}`,
+              `auto-connect: ${isAutoEnabled() ? "on" : "off"}`,
+              `session: ${server ? (currentAgentId ? `bridged as Paseo agent ${currentAgentId}` : "bridged (not yet imported)") : "not bridged"}`,
+            ];
+            ctx.ui.notify(`Paseo bridge status\n${lines.join("\n")}`, "info");
+            return;
+          }
+          default:
+            ctx.ui.notify("Usage: /paseo-bridge install | uninstall | auto [on|off] | connect | disconnect | status", "warning");
+        }
+      } catch (err) {
+        ctx.ui.notify(`paseo-bridge: ${err instanceof Error ? err.message : String(err)}`, "error");
+      }
+    },
   });
 }

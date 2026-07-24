@@ -1,10 +1,22 @@
 {
-  "name": "pi-paseo-bridge",
+  "name": "paseo-bridge-pi",
   "version": "0.1.0",
   "description": "Surface terminal-started pi TUI sessions in Paseo, live and steerable.",
   "type": "module",
   "license": "MIT",
   "author": "Caelan <git@caesay.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caesay/paseo-bridge-pi"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extension"
+    ]
+  },
   "files": [
     "shim",
     "extension",

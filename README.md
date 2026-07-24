@@ -1,8 +1,54 @@
-# pi-paseo-bridge
+# paseo-bridge-pi
 
 Start `pi` in a terminal and have that live session automatically appear in
 [Paseo](https://paseo.sh) — readable and steerable from your phone — while the
 TUI stays fully usable at your desk. No changes to Paseo required.
+
+## Install
+
+1. Install the pi extension:
+
+   ```
+   pi install git:github.com/caesay/paseo-bridge-pi
+   ```
+
+2. Inside pi, set up the Paseo side (points Paseo's pi provider at the bridge
+   shim):
+
+   ```
+   /paseo-bridge install
+   ```
+
+3. Restart the Paseo daemon (`paseo restart`, or restart the desktop app).
+
+That's it. Every new terminal pi session now shows up in Paseo automatically
+(auto-connect is on by default). Make sure the `paseo` CLI is reachable:
+either on `PATH`, or set `PASEO_CLI` to its full path (the desktop app
+bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
+
+## Slash commands
+
+| Command | Effect |
+|---|---|
+| `/paseo-bridge install` | Register the shim as Paseo's pi provider command (`~/.paseo/config.json`). |
+| `/paseo-bridge uninstall` | Remove the shim registration (only if it points at this package). |
+| `/paseo-bridge auto on\|off` | Whether new TUI sessions connect to Paseo automatically (default: on). |
+| `/paseo-bridge connect` | Connect the current session to Paseo now. |
+| `/paseo-bridge disconnect` | Stop bridging the current session. |
+| `/paseo-bridge status` | Show shim / auto-connect / session state. |
+
+## What you get
+
+- Terminal sessions appear in Paseo within seconds, with live streaming
+  tokens; prompts sent from the app run in the TUI (which stays usable).
+- Model and effort changes sync both ways.
+- After your first message, a session title is generated with the current
+  model and applied to the Paseo agent, the workspace (prefixed `[TUI]`), and
+  pi's session list.
+- Closing the TUI mid-conversation leaves a helpful error in Paseo with the
+  exact `pi --session <id>` command to resume, and Paseo's Fork keeps working.
+- Reopening a session in a terminal reattaches the existing Paseo agent
+  instead of creating a duplicate.
 
 ## How it works
 
@@ -12,14 +58,14 @@ Two components:
    session start it opens a named pipe (Windows) / unix socket keyed on the
    session file path, speaks pi's RPC JSONL dialect over it, and registers the
    session with the Paseo daemon via `paseo import`. It also keeps Paseo's
-   view in sync: TUI-side model/effort changes are pushed over the daemon's
-   WS API, and after the first user message it generates a session title with
-   the current model (shown in both the Paseo app and pi's session list).
+   view in sync (model/effort/titles) over the daemon's WS API.
 2. **Shim** (`shim/pi-paseo-shim.js`) — configured as Paseo's pi provider
    command. When Paseo resumes a session, the shim checks whether that session
    has a live TUI (bridge pipe present). If yes, it pumps bytes between
    Paseo's stdio and the pipe. If no, it spawns the real `pi` with unchanged
-   arguments, so Paseo-native sessions behave exactly as before.
+   arguments, so Paseo-native sessions behave exactly as before. If the TUI
+   dies while attached, the shim stays alive and answers further requests
+   with a resume hint instead of a bare error.
 
 The TUI process remains the **only writer** of the session `.jsonl` file.
 
@@ -27,7 +73,7 @@ The TUI process remains the **only writer** of the session `.jsonl` file.
 TERMINAL                                    PASEO DAEMON
 ────────                                    ────────────
 pi (TUI)                                    paseo import --provider pi <session-file>
- └─ pi-paseo-bridge (extension)                      │
+ └─ paseo-bridge-pi (extension)                      │
      ├─ pipe: \\.\pipe\pi-paseo-bridge-<hash>        ▼
      │        (or $XDG_RUNTIME_DIR/pi-paseo/*.sock)  spawns provider command
      ├─ speaks pi RPC JSONL over it                  │
@@ -37,36 +83,31 @@ pi (TUI)                                    paseo import --provider pi <session-
                                                      └─ no pipe?   spawn real pi
 ```
 
-## Install
+## Uninstall
+
+Inside pi:
 
 ```
-git clone <this repo>
-cd paseo-remote-shim
-npm install        # installs deps and registers the bridge (lifecycle hook)
+/paseo-bridge uninstall
+pi remove git:github.com/caesay/paseo-bridge-pi
 ```
 
-`npm install` (or an explicit `npm run install`) registers both halves:
+Then restart the Paseo daemon.
 
-1. **Extension** — adds the repo's `extension/` directory to the `extensions`
-   array in `~/.pi/agent/settings.json`, so every terminal pi loads it.
-2. **Shim** — sets `agents.providers.pi.command` in `~/.paseo/config.json` to
-   `[node, <repo>/shim/pi-paseo-shim.js]`. If a different pi command override
-   already exists, the script refuses and tells you to resolve it manually.
+## Development install
 
-Restart the Paseo daemon afterwards (`paseo restart`), and make sure the
-`paseo` CLI is reachable: either on `PATH`, or set `PASEO_CLI` to its full
-path (the desktop app bundles it at `.../Paseo/resources/bin/paseo.cmd` on
-Windows).
-
-To uninstall:
+Working from a checkout instead of a pi package:
 
 ```
-npm run uninstall
+git clone https://github.com/caesay/paseo-bridge-pi
+cd paseo-bridge-pi
+npm install        # registers extension path + shim (lifecycle hook)
 ```
 
-This removes the settings entry and the provider command override (only if it
-still points at this repo's shim). Don't move the checkout without
-re-running install - both registrations reference it by absolute path.
+`npm run uninstall` reverses it. Both registrations reference the checkout by
+absolute path, so re-run install if you move it. (When the package directory
+is managed by pi — under `~/.pi/agent/git|npm/` — the npm hook does nothing;
+pi handles extension discovery and `/paseo-bridge install` handles the shim.)
 
 ## Environment variables
 
@@ -85,10 +126,12 @@ re-running install - both registrations reference it by absolute path.
 
 - Extension UI dialogs (`ask_user` etc.) render in the TUI only; they are not
   forwarded to Paseo.
-- Timeline rewind from Paseo (`paseo_tree`) is rejected for terminal-attached
-  sessions.
+- Timeline rewind from Paseo is rejected for terminal-attached sessions
+  (use Fork instead).
 - Paseo's MCP tool injection (`pi-mcp-adapter`) does not apply to adopted
   sessions.
+- Relay / pairing-URL daemon setups (`PASEO_HOST` with a URL) skip the WS
+  state sync; import still works via the CLI.
 - If the TUI exits and Paseo later resumes the session itself, do not start a
   second TUI on the same session file while that Paseo agent is running — the
   two processes would both own the session file.

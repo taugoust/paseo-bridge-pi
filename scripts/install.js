@@ -13,6 +13,15 @@ import {
 // Note: npm also runs this as the "install" lifecycle hook during a plain
 // `npm install`, so checking out the repo and installing dependencies
 // registers the bridge in one step.
+//
+// When this package is installed *by pi* (pi install git:/npm:), pi manages
+// extension discovery itself and runs npm install in the package dir - do
+// nothing there, or the extension would be registered twice.
+const normalizedDir = norm(extensionDir).toLowerCase();
+if (normalizedDir.includes("/.pi/agent/git/") || normalizedDir.includes("/.pi/agent/npm/") || normalizedDir.includes("/.pi/git/") || normalizedDir.includes("/.pi/npm/")) {
+  console.log("paseo-bridge-pi: installed as a pi package. Run /paseo-bridge install inside pi to set up the Paseo shim.");
+  process.exit(0);
+}
 
 let changed = false;
 
