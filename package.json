@@ -24,8 +24,8 @@
     "README.md"
   ],
   "scripts": {
-    "install": "node scripts/install.js",
-    "uninstall": "node scripts/uninstall.js"
+    "dev-install": "node scripts/install.js",
+    "dev-uninstall": "node scripts/uninstall.js"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.81.1"

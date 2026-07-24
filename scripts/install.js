@@ -11,13 +11,12 @@ import {
   writeJson,
 } from "./config.js";
 
-// Note: npm also runs this as the "install" lifecycle hook during a plain
-// `npm install`, so checking out the repo and installing dependencies
-// registers the bridge in one step.
+// Development-only registration (`npm run dev-install` in a checkout). The
+// supported install path is the pi package flow described in the README.
 //
-// When this package is installed *by pi* (pi install git:/npm:), pi manages
-// extension discovery itself and runs npm install in the package dir - do
-// nothing there, or the extension would be registered twice.
+// Safety net: if this ever runs inside a pi-managed package directory
+// (pi install git:/npm:, or a temp -e install), do nothing - pi manages
+// extension discovery there and registering again would double-load.
 const normalizedDir = norm(extensionDir).toLowerCase();
 const tmpDir = norm(os.tmpdir()).toLowerCase();
 const piManaged =

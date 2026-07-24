@@ -101,13 +101,13 @@ Working from a checkout instead of a pi package:
 ```
 git clone https://github.com/caesay/paseo-bridge-pi
 cd paseo-bridge-pi
-npm install        # registers extension path + shim (lifecycle hook)
+npm install
+npm run dev-install    # registers the checkout's extension path + shim
 ```
 
-`npm run uninstall` reverses it. Both registrations reference the checkout by
-absolute path, so re-run install if you move it. (When the package directory
-is managed by pi — under `~/.pi/agent/git|npm/` — the npm hook does nothing;
-pi handles extension discovery and `/paseo-bridge install` handles the shim.)
+`npm run dev-uninstall` reverses it. Both registrations reference the
+checkout by absolute path, so re-run it if you move the checkout. This is
+for development only — the supported install is the pi package flow above.
 
 ## Environment variables
 
