@@ -129,6 +129,80 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   let isCompacting = false;
   let autoCompactionEnabled = true;
   const importAttempted = new Set<string>();
+  let currentAgentId: string | null = null;
+  // Values Paseo just applied through the bridge; used to break the echo
+  // loop when pushing TUI-side changes back to the daemon.
+  let remoteAppliedModel: string | null = null;
+  let remoteAppliedThinking: string | null = null;
+
+  function paseoWsUrl(): string | null {
+    const host = process.env.PASEO_HOST?.trim();
+    if (!host) return "ws://127.0.0.1:6767/ws";
+    if (host.includes("://")) return null; // relay/offer URLs not supported for state sync
+    return `ws://${host}/ws`;
+  }
+
+  // Pushes a TUI-side model/thinking change into Paseo so its UI stays in
+  // sync. Paseo caches thinkingOptionId and prefers the cache over get_state,
+  // so polling alone never propagates TUI-side changes.
+  function pushAgentConfigToPaseo(kind: "model" | "thinking", value: string | null): void {
+    if (!currentAgentId) return;
+    const url = paseoWsUrl();
+    if (!url) return;
+    const WebSocketCtor = (globalThis as any).WebSocket;
+    if (typeof WebSocketCtor !== "function") {
+      debugLog("global WebSocket unavailable; cannot sync state to Paseo");
+      return;
+    }
+    try {
+      const requestId = crypto.randomUUID();
+      const ws = new WebSocketCtor(url);
+      const done = (label: string) => {
+        clearTimeout(timer);
+        debugLog(`paseo sync ${kind}=${value}: ${label}`);
+        try {
+          ws.close();
+        } catch {
+          // already closed
+        }
+      };
+      const timer = setTimeout(() => done("timeout"), 5000);
+      ws.onopen = () => {
+        // Daemon protocol: hello handshake first, then session-wrapped messages.
+        ws.send(
+          JSON.stringify({
+            type: "hello",
+            clientId: `pi-paseo-bridge-${process.pid}`,
+            clientType: "cli",
+            protocolVersion: 1,
+          }),
+        );
+        const msg =
+          kind === "model"
+            ? { type: "set_agent_model_request", agentId: currentAgentId, modelId: value, requestId }
+            : { type: "set_agent_thinking_request", agentId: currentAgentId, thinkingOptionId: value, requestId };
+        ws.send(JSON.stringify({ type: "session", message: msg }));
+      };
+      ws.onmessage = (event: { data: unknown }) => {
+        try {
+          const msg = JSON.parse(String(event.data));
+          const payload = msg?.type === "session" ? msg.message?.payload : undefined;
+          if (payload?.requestId === requestId) {
+            done(payload.accepted ? "accepted" : `rejected: ${payload.error}`);
+          }
+        } catch {
+          // initial state snapshot or binary frame - ignore
+        }
+      };
+      ws.onerror = () => done("connection error");
+    } catch (err) {
+      debugLog(`paseo sync failed: ${String(err)}`);
+    }
+  }
+
+  function modelToId(model: { provider?: string; id?: string } | null | undefined): string | null {
+    return model?.provider && model.id ? `${model.provider}/${model.id}` : null;
+  }
 
   function send(obj: unknown): void {
     if (!client || client.destroyed) return;
@@ -273,6 +347,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
             send(failure(id, type, `Model not found: ${cmd.provider}/${cmd.modelId}`));
             return;
           }
+          remoteAppliedModel = modelToId(model);
           const ok = await pi.setModel(model);
           if (!ok) {
             send(failure(id, type, `No API key available for ${cmd.provider}/${cmd.modelId}`));
@@ -282,6 +357,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           return;
         }
         case "set_thinking_level":
+          remoteAppliedThinking = cmd.level;
           pi.setThinkingLevel(cmd.level);
           send(success(id, type));
           return;
@@ -374,6 +450,9 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     }
     currentPipePath = null;
     currentSessionFile = null;
+    currentAgentId = null;
+    remoteAppliedModel = null;
+    remoteAppliedThinking = null;
   }
 
   function startServer(sessionFile: string): void {
@@ -437,6 +516,22 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     if (process.env.PASEO_HOST) args.push("--host", process.env.PASEO_HOST);
     runPaseoCli(cli, args, (code, output) => {
       debugLog(`paseo import exited ${code}: ${output.slice(0, 500)}`);
+      if (code !== 0) return;
+      try {
+        const jsonStart = output.indexOf("{");
+        if (jsonStart === -1) return;
+        const result = JSON.parse(output.slice(jsonStart));
+        if (typeof result.agentId === "string" && result.agentId) {
+          currentAgentId = result.agentId;
+          debugLog(`paseo agent id: ${currentAgentId}`);
+          // Align Paseo's cached model/thinking with the TUI's live values.
+          // The import-time descriptor scan can be stale or empty.
+          pushAgentConfigToPaseo("model", modelToId(latestCtx?.model));
+          pushAgentConfigToPaseo("thinking", pi.getThinkingLevel() ?? null);
+        }
+      } catch (err) {
+        debugLog(`could not parse import output: ${String(err)}`);
+      }
     });
   }
 
@@ -496,5 +591,24 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     latestCtx = ctx;
     isCompacting = false;
     send({ type: "compaction_end", ...(event?.entry ? { entry: event.entry } : {}) });
+  });
+
+  pi.on("model_select", async (event, ctx) => {
+    latestCtx = ctx;
+    const modelId = modelToId(event.model);
+    if (modelId === remoteAppliedModel) {
+      remoteAppliedModel = null;
+      return;
+    }
+    pushAgentConfigToPaseo("model", modelId);
+  });
+
+  pi.on("thinking_level_select", async (event, ctx) => {
+    latestCtx = ctx;
+    if (event.level === remoteAppliedThinking) {
+      remoteAppliedThinking = null;
+      return;
+    }
+    pushAgentConfigToPaseo("thinking", event.level ?? null);
   });
 }
