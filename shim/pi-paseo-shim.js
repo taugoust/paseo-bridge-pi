@@ -52,13 +52,67 @@ function tryConnect(pipePath) {
   });
 }
 
-function bridge(socket) {
+function writeJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function sessionIdFromFile(sessionFile) {
+  const base = path.basename(sessionFile, ".jsonl");
+  const idx = base.lastIndexOf("_");
+  const id = idx >= 0 ? base.slice(idx + 1) : "";
+  return /^[0-9a-f-]{16,}$/i.test(id) ? id : null;
+}
+
+function bridge(socket, sessionFile) {
   socket.setNoDelay?.(true);
+  let tombstone = false;
   process.stdin.pipe(socket);
   socket.pipe(process.stdout);
-  process.stdin.on("end", () => socket.end());
-  socket.on("close", () => process.exit(0));
-  socket.on("error", () => process.exit(1));
+  process.stdin.on("end", () => {
+    if (tombstone) process.exit(0);
+    else socket.end();
+  });
+  // When the terminal pi dies, stay alive and answer RPC commands with a
+  // helpful error instead of exiting - a dead child would make Paseo show a
+  // bare "Pi RPC session is closed" with no way forward.
+  const enterTombstone = () => {
+    if (tombstone) return;
+    tombstone = true;
+    const resumeRef = sessionIdFromFile(sessionFile) ?? sessionFile;
+    const message = `The terminal pi session has ended. Resume it from the project directory with: pi --session ${resumeRef} - or use Fork in Paseo to continue from this conversation in a new session.`;
+    process.stdin.unpipe(socket);
+    // Fails any in-flight turn: Paseo treats process_exit as a fatal runtime event.
+    writeJsonLine({ type: "process_exit", error: message });
+    let buffer = "";
+    process.stdin.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) break;
+        const line = buffer.slice(0, newline).replace(/\r$/, "");
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (parsed && typeof parsed === "object" && parsed.id) {
+          writeJsonLine({
+            type: "response",
+            id: parsed.id,
+            command: typeof parsed.type === "string" ? parsed.type : "unknown",
+            success: false,
+            error: message,
+          });
+        }
+      }
+    });
+    process.stdin.resume();
+  };
+  socket.on("close", enterTombstone);
+  socket.on("error", enterTombstone);
 }
 
 function resolveRealPi() {
@@ -119,7 +173,7 @@ async function main() {
     const pipePath = pipePathForSession(sessionFile);
     const socket = await tryConnect(pipePath);
     if (socket) {
-      bridge(socket);
+      bridge(socket, sessionFile);
       return;
     }
     if (process.platform !== "win32") {

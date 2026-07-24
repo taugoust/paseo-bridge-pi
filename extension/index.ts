@@ -163,8 +163,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     }
     const ws = new WebSocketCtor(url);
     const pending = new Map<string, (payload: any) => void>();
+    debugLog(`paseo sync websocket connecting to ${url}`);
     const opened = new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
+        debugLog("paseo sync websocket connected");
         ws.send(
           JSON.stringify({
             type: "hello",
@@ -176,9 +178,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         );
         resolve();
       };
-      ws.onerror = () => reject(new Error("connection error"));
+      ws.onerror = (event: unknown) => {
+        debugLog(`paseo sync websocket error: ${String((event as any)?.message ?? "connection error")}`);
+        reject(new Error("connection error"));
+      };
     });
     opened.catch(() => {}); // avoid unhandled rejection when nothing awaits yet
+    ws.onclose = (event: { code?: unknown; reason?: unknown }) => {
+      debugLog(`paseo sync websocket closed (code=${String(event?.code ?? "unknown")}, reason=${String(event?.reason ?? "none")})`);
+    };
     ws.onmessage = (event: { data: unknown }) => {
       try {
         const msg = JSON.parse(String(event.data));
@@ -186,7 +194,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         const resolver = payload?.requestId ? pending.get(payload.requestId) : undefined;
         if (resolver) {
           pending.delete(payload.requestId);
+          debugLog(`paseo sync response received for ${payload.requestId}`);
           resolver(payload);
+        } else if (msg?.type === "session") {
+          debugLog(`paseo sync received uncorrelated session message (requestId=${String(payload?.requestId ?? "none")})`);
         }
       } catch {
         // initial state snapshot or binary frame - ignore
@@ -199,14 +210,18 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         return await new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
             pending.delete(requestId);
+            debugLog(`paseo sync request timed out: ${requestId}`);
             reject(new Error("timeout"));
           }, 5000);
           pending.set(requestId, (payload) => {
             clearTimeout(timer);
             resolve(payload);
           });
-          ws.send(JSON.stringify({ type: "session", message: build(requestId) }));
+          const message = build(requestId);
+          debugLog(`paseo sync sending ${String(message.type ?? "unknown")} (requestId=${requestId})`);
+          ws.send(JSON.stringify({ type: "session", message }));
         });
+      }
       },
       close() {
         try {
@@ -232,10 +247,11 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   // The sidebar labels workspaces by branch name; give the workspace the
-  // session title so terminal sessions are tellable apart.
+  // session title, prefixed so it's clear the session started in a terminal.
   async function setPaseoWorkspaceTitle(agentId: string, title: string): Promise<void> {
     const conn = openPaseoWs();
     if (!conn) return;
+    const workspaceTitle = `[TUI] ${title}`;
     try {
       const fetched = await conn.request((requestId) => ({ type: "fetch_agent_request", agentId, requestId }));
       const workspaceId = fetched?.agent?.workspaceId;
@@ -243,8 +259,13 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         debugLog(`workspace title: agent ${agentId} has no workspaceId (${fetched?.error ?? "no error"})`);
         return;
       }
-      const result = await conn.request((requestId) => ({ type: "workspace.title.set.request", workspaceId, title, requestId }));
-      debugLog(`paseo sync workspace title "${title}": ${result.accepted ? "accepted" : `rejected: ${result.error}`}`);
+      const result = await conn.request((requestId) => ({
+        type: "workspace.title.set.request",
+        workspaceId,
+        title: workspaceTitle,
+        requestId,
+      }));
+      debugLog(`paseo sync workspace title "${workspaceTitle}": ${result.accepted ? "accepted" : `rejected: ${result.error}`}`);
     } catch (err) {
       debugLog(`workspace title failed: ${String(err)}`);
     } finally {
