@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // Markers and command names must match Paseo's pi adapter
@@ -134,6 +135,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   // loop when pushing TUI-side changes back to the daemon.
   let remoteAppliedModel: string | null = null;
   let remoteAppliedThinking: string | null = null;
+  let titleAttempted = false;
 
   function paseoWsUrl(): string | null {
     const host = process.env.PASEO_HOST?.trim();
@@ -142,11 +144,11 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     return `ws://${host}/ws`;
   }
 
-  // Pushes a TUI-side model/thinking change into Paseo so its UI stays in
-  // sync. Paseo caches thinkingOptionId and prefers the cache over get_state,
-  // so polling alone never propagates TUI-side changes.
-  function pushAgentConfigToPaseo(kind: "model" | "thinking", value: string | null): void {
-    if (!currentAgentId) return;
+  // Sends one session-wrapped request to the Paseo daemon over its WS API
+  // and logs the outcome. Used for state the daemon only accepts as client
+  // requests (it caches model/thinking/name and prefers the cache over
+  // anything visible through the provider RPC surface).
+  function paseoSessionRequest(buildMessage: (requestId: string) => Record<string, unknown>, label: string): void {
     const url = paseoWsUrl();
     if (!url) return;
     const WebSocketCtor = (globalThis as any).WebSocket;
@@ -157,9 +159,9 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     try {
       const requestId = crypto.randomUUID();
       const ws = new WebSocketCtor(url);
-      const done = (label: string) => {
+      const done = (outcome: string) => {
         clearTimeout(timer);
-        debugLog(`paseo sync ${kind}=${value}: ${label}`);
+        debugLog(`paseo sync ${label}: ${outcome}`);
         try {
           ws.close();
         } catch {
@@ -177,18 +179,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
             protocolVersion: 1,
           }),
         );
-        const msg =
-          kind === "model"
-            ? { type: "set_agent_model_request", agentId: currentAgentId, modelId: value, requestId }
-            : { type: "set_agent_thinking_request", agentId: currentAgentId, thinkingOptionId: value, requestId };
-        ws.send(JSON.stringify({ type: "session", message: msg }));
+        ws.send(JSON.stringify({ type: "session", message: buildMessage(requestId) }));
       };
       ws.onmessage = (event: { data: unknown }) => {
         try {
           const msg = JSON.parse(String(event.data));
           const payload = msg?.type === "session" ? msg.message?.payload : undefined;
           if (payload?.requestId === requestId) {
-            done(payload.accepted ? "accepted" : `rejected: ${payload.error}`);
+            const ok = payload.accepted ?? payload.ok;
+            done(ok ? "accepted" : `rejected: ${payload.error}`);
           }
         } catch {
           // initial state snapshot or binary frame - ignore
@@ -196,8 +195,20 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       };
       ws.onerror = () => done("connection error");
     } catch (err) {
-      debugLog(`paseo sync failed: ${String(err)}`);
+      debugLog(`paseo sync ${label} failed: ${String(err)}`);
     }
+  }
+
+  function pushAgentConfigToPaseo(kind: "model" | "thinking", value: string | null): void {
+    if (!currentAgentId) return;
+    const agentId = currentAgentId;
+    paseoSessionRequest(
+      (requestId) =>
+        kind === "model"
+          ? { type: "set_agent_model_request", agentId, modelId: value, requestId }
+          : { type: "set_agent_thinking_request", agentId, thinkingOptionId: value, requestId },
+      `${kind}=${value}`,
+    );
   }
 
   function modelToId(model: { provider?: string; id?: string } | null | undefined): string | null {
@@ -453,6 +464,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     currentAgentId = null;
     remoteAppliedModel = null;
     remoteAppliedThinking = null;
+    titleAttempted = false;
   }
 
   function startServer(sessionFile: string): void {
@@ -574,10 +586,66 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     });
   }
 
+  // Imported terminal sessions have no title in Paseo (the UI falls back to
+  // the branch name), so generate one from the first user message.
+  async function maybeGenerateSessionTitle(ctx: ExtensionContext): Promise<void> {
+    if (titleAttempted || !currentAgentId) return;
+    if (process.env.PI_PASEO_BRIDGE_NO_TITLE) return;
+    if (ctx.sessionManager.getSessionName()) {
+      titleAttempted = true;
+      return;
+    }
+    const firstMessage = capturedUserEntries(ctx)[0]?.text?.trim();
+    if (!firstMessage) {
+      debugLog("title generation: no user message in session yet");
+      return;
+    }
+    titleAttempted = true;
+    try {
+      const model = ctx.model;
+      if (!model) return;
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok) {
+        debugLog(`title generation: no auth: ${auth.error}`);
+        return;
+      }
+      const response = await completeSimple(
+        model,
+        {
+          systemPrompt:
+            "You name coding agent sessions. Given the user's first message, reply with only a short session title: 3 to 8 words, plain text, no quotes, no trailing punctuation.",
+          messages: [
+            { role: "user", content: [{ type: "text", text: firstMessage.slice(0, 4000) }], timestamp: Date.now() } as any,
+          ],
+        },
+        { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 1024, reasoning: "off" },
+      );
+      let title = readTextContent(response.content).trim().split("\n")[0].trim().replace(/^["']+|["']+$/g, "");
+      if (!title) {
+        debugLog(`title generation: empty response (stopReason=${(response as any).stopReason})`);
+        return;
+      }
+      if (title.length > 80) title = `${title.slice(0, 77)}...`;
+      pi.setSessionName(title);
+      const agentId = currentAgentId;
+      paseoSessionRequest(
+        (requestId) => ({ type: "update_agent_request", agentId, name: title, requestId }),
+        `title "${title}"`,
+      );
+    } catch (err) {
+      debugLog(`title generation failed: ${String(err)}`);
+    }
+  }
+
+  pi.on("turn_start", async (_event, ctx) => {
+    void maybeGenerateSessionTitle(ctx);
+  });
+
   pi.on("turn_end", async (event, ctx) => {
     latestCtx = ctx;
     send(event);
     emitEntryCapture(ctx, "turn_end");
+    void maybeGenerateSessionTitle(ctx);
   });
 
   pi.on("session_before_compact", async (_event, ctx) => {

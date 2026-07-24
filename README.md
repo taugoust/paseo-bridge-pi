@@ -11,7 +11,10 @@ Two components:
 1. **Extension** (`extension/index.ts`) — loaded by every terminal pi. On
    session start it opens a named pipe (Windows) / unix socket keyed on the
    session file path, speaks pi's RPC JSONL dialect over it, and registers the
-   session with the Paseo daemon via `paseo import`.
+   session with the Paseo daemon via `paseo import`. It also keeps Paseo's
+   view in sync: TUI-side model/effort changes are pushed over the daemon's
+   WS API, and after the first user message it generates a session title with
+   the current model (shown in both the Paseo app and pi's session list).
 2. **Shim** (`shim/pi-paseo-shim.js`) — configured as Paseo's pi provider
    command. When Paseo resumes a session, the shim checks whether that session
    has a live TUI (bridge pipe present). If yes, it pumps bytes between
@@ -71,6 +74,7 @@ re-running install - both registrations reference it by absolute path.
 |---|---|
 | `PI_PASEO_BRIDGE=off` | Disable the extension entirely. |
 | `PI_PASEO_BRIDGE_NO_IMPORT=1` | Open the bridge pipe but skip `paseo import` (session won't auto-appear). |
+| `PI_PASEO_BRIDGE_NO_TITLE=1` | Skip LLM title generation after the first user message. |
 | `PI_PASEO_BRIDGE_DEBUG=1` | Log to `~/.pi/paseo-bridge/debug.log`. |
 | `PI_PASEO_BRIDGE_FORCE=1` | Activate even when pi is not in TUI mode (testing only). |
 | `PASEO_CLI` | Path to the paseo CLI used for registration. |
