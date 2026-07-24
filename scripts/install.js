@@ -25,6 +25,7 @@ const piManaged =
   normalizedDir.includes("/.pi/agent/npm/") ||
   normalizedDir.includes("/.pi/git/") ||
   normalizedDir.includes("/.pi/npm/") ||
+  normalizedDir.includes("/.pi/agent/tmp/") ||
   normalizedDir.startsWith(`${tmpDir}/`);
 if (piManaged) {
   console.log("paseo-bridge-pi: installed as a pi package. Run /paseo-bridge install inside pi to set up the Paseo shim.");
