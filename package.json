@@ -8,8 +8,13 @@
   "files": [
     "shim",
     "extension",
+    "scripts",
     "README.md"
   ],
+  "scripts": {
+    "install": "node scripts/install.js",
+    "uninstall": "node scripts/uninstall.js"
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.81.1"
   }

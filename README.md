@@ -36,32 +36,34 @@ pi (TUI)                                    paseo import --provider pi <session-
 
 ## Install
 
-1. **Extension** — copy (or symlink) the `extension/` directory into pi's
-   global extensions directory:
+```
+git clone <this repo>
+cd paseo-remote-shim
+npm install        # installs deps and registers the bridge (lifecycle hook)
+```
 
-   ```
-   ~/.pi/agent/extensions/pi-paseo-bridge/index.ts
-   ```
+`npm install` (or an explicit `npm run install`) registers both halves:
 
-2. **Shim** — override Paseo's pi provider command in `~/.paseo/config.json`:
+1. **Extension** — adds the repo's `extension/` directory to the `extensions`
+   array in `~/.pi/agent/settings.json`, so every terminal pi loads it.
+2. **Shim** — sets `agents.providers.pi.command` in `~/.paseo/config.json` to
+   `[node, <repo>/shim/pi-paseo-shim.js]`. If a different pi command override
+   already exists, the script refuses and tells you to resolve it manually.
 
-   ```json
-   {
-     "agents": {
-       "providers": {
-         "pi": { "command": ["node", "C:/path/to/shim/pi-paseo-shim.js"] }
-       }
-     }
-   }
-   ```
+Restart the Paseo daemon afterwards (`paseo restart`), and make sure the
+`paseo` CLI is reachable: either on `PATH`, or set `PASEO_CLI` to its full
+path (the desktop app bundles it at `.../Paseo/resources/bin/paseo.cmd` on
+Windows).
 
-   Restart the Paseo daemon afterwards (`paseo restart`).
+To uninstall:
 
-3. Make sure the `paseo` CLI is reachable: either on `PATH`, or set `PASEO_CLI`
-   to its full path (the desktop app bundles it at
-   `.../Paseo/resources/bin/paseo.cmd` on Windows).
+```
+npm run uninstall
+```
 
-To uninstall, remove the extension directory and the `command` override.
+This removes the settings entry and the provider command override (only if it
+still points at this repo's shim). Don't move the checkout without
+re-running install - both registrations reference it by absolute path.
 
 ## Environment variables
 
