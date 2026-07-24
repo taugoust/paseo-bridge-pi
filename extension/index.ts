@@ -144,58 +144,111 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     return `ws://${host}/ws`;
   }
 
-  // Sends one session-wrapped request to the Paseo daemon over its WS API
-  // and logs the outcome. Used for state the daemon only accepts as client
-  // requests (it caches model/thinking/name and prefers the cache over
-  // anything visible through the provider RPC surface).
-  function paseoSessionRequest(buildMessage: (requestId: string) => Record<string, unknown>, label: string): void {
+  // The daemon hides non-legacy providers (including pi) from clients that
+  // do not declare a recent app version in their hello.
+  const PASEO_CLIENT_APP_VERSION = "0.1.110";
+
+  // Opens a connection to the Paseo daemon's WS API (hello handshake, then
+  // session-wrapped request/response correlated by requestId). Used for
+  // state the daemon only accepts as client requests (it caches
+  // model/thinking/titles and prefers the cache over anything visible
+  // through the provider RPC surface).
+  function openPaseoWs(): { request: (build: (requestId: string) => Record<string, unknown>) => Promise<any>; close: () => void } | null {
     const url = paseoWsUrl();
-    if (!url) return;
+    if (!url) return null;
     const WebSocketCtor = (globalThis as any).WebSocket;
     if (typeof WebSocketCtor !== "function") {
       debugLog("global WebSocket unavailable; cannot sync state to Paseo");
-      return;
+      return null;
     }
-    try {
-      const requestId = crypto.randomUUID();
-      const ws = new WebSocketCtor(url);
-      const done = (outcome: string) => {
-        clearTimeout(timer);
-        debugLog(`paseo sync ${label}: ${outcome}`);
-        try {
-          ws.close();
-        } catch {
-          // already closed
-        }
-      };
-      const timer = setTimeout(() => done("timeout"), 5000);
+    const ws = new WebSocketCtor(url);
+    const pending = new Map<string, (payload: any) => void>();
+    const opened = new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
-        // Daemon protocol: hello handshake first, then session-wrapped messages.
         ws.send(
           JSON.stringify({
             type: "hello",
             clientId: `pi-paseo-bridge-${process.pid}`,
             clientType: "cli",
             protocolVersion: 1,
+            appVersion: PASEO_CLIENT_APP_VERSION,
           }),
         );
-        ws.send(JSON.stringify({ type: "session", message: buildMessage(requestId) }));
+        resolve();
       };
-      ws.onmessage = (event: { data: unknown }) => {
-        try {
-          const msg = JSON.parse(String(event.data));
-          const payload = msg?.type === "session" ? msg.message?.payload : undefined;
-          if (payload?.requestId === requestId) {
-            const ok = payload.accepted ?? payload.ok;
-            done(ok ? "accepted" : `rejected: ${payload.error}`);
-          }
-        } catch {
-          // initial state snapshot or binary frame - ignore
+      ws.onerror = () => reject(new Error("connection error"));
+    });
+    opened.catch(() => {}); // avoid unhandled rejection when nothing awaits yet
+    ws.onmessage = (event: { data: unknown }) => {
+      try {
+        const msg = JSON.parse(String(event.data));
+        const payload = msg?.type === "session" ? msg.message?.payload : undefined;
+        const resolver = payload?.requestId ? pending.get(payload.requestId) : undefined;
+        if (resolver) {
+          pending.delete(payload.requestId);
+          resolver(payload);
         }
-      };
-      ws.onerror = () => done("connection error");
+      } catch {
+        // initial state snapshot or binary frame - ignore
+      }
+    };
+    return {
+      async request(build) {
+        await opened;
+        const requestId = crypto.randomUUID();
+        return await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pending.delete(requestId);
+            reject(new Error("timeout"));
+          }, 5000);
+          pending.set(requestId, (payload) => {
+            clearTimeout(timer);
+            resolve(payload);
+          });
+          ws.send(JSON.stringify({ type: "session", message: build(requestId) }));
+        });
+      },
+      close() {
+        try {
+          ws.close();
+        } catch {
+          // already closed
+        }
+      },
+    };
+  }
+
+  function paseoSessionRequest(buildMessage: (requestId: string) => Record<string, unknown>, label: string): void {
+    const conn = openPaseoWs();
+    if (!conn) return;
+    conn
+      .request(buildMessage)
+      .then((payload) => {
+        const ok = payload.accepted ?? payload.ok;
+        debugLog(`paseo sync ${label}: ${ok ? "accepted" : `rejected: ${payload.error}`}`);
+      })
+      .catch((err) => debugLog(`paseo sync ${label}: ${String(err?.message ?? err)}`))
+      .finally(() => conn.close());
+  }
+
+  // The sidebar labels workspaces by branch name; give the workspace the
+  // session title so terminal sessions are tellable apart.
+  async function setPaseoWorkspaceTitle(agentId: string, title: string): Promise<void> {
+    const conn = openPaseoWs();
+    if (!conn) return;
+    try {
+      const fetched = await conn.request((requestId) => ({ type: "fetch_agent_request", agentId, requestId }));
+      const workspaceId = fetched?.agent?.workspaceId;
+      if (!workspaceId) {
+        debugLog(`workspace title: agent ${agentId} has no workspaceId (${fetched?.error ?? "no error"})`);
+        return;
+      }
+      const result = await conn.request((requestId) => ({ type: "workspace.title.set.request", workspaceId, title, requestId }));
+      debugLog(`paseo sync workspace title "${title}": ${result.accepted ? "accepted" : `rejected: ${result.error}`}`);
     } catch (err) {
-      debugLog(`paseo sync ${label} failed: ${String(err)}`);
+      debugLog(`workspace title failed: ${String(err)}`);
+    } finally {
+      conn.close();
     }
   }
 
@@ -682,6 +735,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         (requestId) => ({ type: "update_agent_request", agentId, name: existingName, requestId }),
         `title "${existingName}" (existing)`,
       );
+      void setPaseoWorkspaceTitle(agentId, existingName);
       return;
     }
     const firstMessage = capturedUserEntries(ctx)[0]?.text?.trim();
@@ -721,6 +775,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         (requestId) => ({ type: "update_agent_request", agentId, name: title, requestId }),
         `title "${title}"`,
       );
+      if (agentId) void setPaseoWorkspaceTitle(agentId, title);
     } catch (err) {
       debugLog(`title generation failed: ${String(err)}`);
     }
