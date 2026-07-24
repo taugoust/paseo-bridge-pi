@@ -1,0 +1,16 @@
+{
+  "name": "pi-paseo-bridge",
+  "version": "0.1.0",
+  "description": "Surface terminal-started pi TUI sessions in Paseo, live and steerable.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Caelan <git@caesay.com>",
+  "files": [
+    "shim",
+    "extension",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.81.1"
+  }
+}
