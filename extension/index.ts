@@ -21,6 +21,7 @@ import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
+import { normalizePiEventForPaseo } from "./tool-result-normalization.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
 type RemoteUiBridgeV1 = {
@@ -948,7 +949,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   for (const eventName of forwardEvents) {
     (pi as any).on(eventName, async (event: unknown, ctx: ExtensionContext) => {
       latestCtx = ctx;
-      send(event);
+      send(normalizePiEventForPaseo(event));
     });
   }
 
