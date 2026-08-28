@@ -7,7 +7,7 @@
   "author": "Caelan <git@caesay.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/caesay/paseo-bridge-pi"
+    "url": "https://github.com/taugoust/paseo-bridge-pi"
   },
   "keywords": [
     "pi-package"
@@ -25,9 +25,12 @@
   ],
   "scripts": {
     "dev-install": "node scripts/install.js",
-    "dev-uninstall": "node scripts/uninstall.js"
+    "dev-uninstall": "node scripts/uninstall.js",
+    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --skipLibCheck extension/index.ts extension/pi-ai-compat.d.ts"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.81.1"
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "typescript": "^5.9.3"
   }
 }

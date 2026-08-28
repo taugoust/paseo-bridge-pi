@@ -20,9 +20,23 @@ import { fileURLToPath } from "node:url";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+type RemoteUiSelectOptions = { signal?: AbortSignal };
+type RemoteUiBridgeV1 = {
+  isConnected(): boolean;
+  select(title: string, options: string[], settings?: RemoteUiSelectOptions): Promise<string | undefined>;
+};
+type PendingRemoteUiRequest = {
+  resolve(value: string | undefined): void;
+  signal?: AbortSignal;
+  abort?: () => void;
+};
+
+const REMOTE_UI_BRIDGE_KEY = "__piPaseoRemoteUiV1";
+
 // Markers and command names must match Paseo's pi adapter
 // (@getpaseo/server dist/server/server/agent/providers/pi/agent.js).
 const ENTRY_CAPTURE_MARKER = "PASEO_ENTRY_CAPTURE";
+const SUBMITTED_USER_ENTRY_MARKER = "PASEO_SUBMITTED_USER_ENTRY";
 const COMMAND_RESULT_MARKER = "PASEO_COMMAND_RESULT";
 const CAPTURE_COMMAND = "paseo_capture_entries";
 const TREE_COMMAND = "paseo_tree";
@@ -84,6 +98,20 @@ function bridgeShimPath(): string {
 }
 
 const paseoConfigFile = path.join(os.homedir(), ".paseo", "config.json");
+
+function readPaseoPassword(): string | null {
+  const inline = process.env.PASEO_PASSWORD?.trim();
+  if (inline) return inline;
+  const passwordFile = process.env.PASEO_PASSWORD_FILE?.trim();
+  if (!passwordFile) return null;
+  try {
+    const password = fs.readFileSync(passwordFile, "utf8").trim();
+    return password || null;
+  } catch (err) {
+    debugLog(`could not read Paseo password file: ${String(err)}`);
+    return null;
+  }
+}
 
 function isOurShimCommand(command: unknown): boolean {
   return (
@@ -181,6 +209,8 @@ function resolvePaseoCli(): string | null {
 
 function runPaseoCli(cli: string, args: string[], onDone: (code: number | null, output: string) => void): void {
   let child;
+  const password = readPaseoPassword();
+  const env = password ? { ...process.env, PASEO_PASSWORD: password } : process.env;
   if (process.platform === "win32" && !cli.endsWith(".exe")) {
     // Node refuses to spawn .cmd files without a shell; go through cmd.exe
     // with /s so the outer quotes survive.
@@ -189,9 +219,10 @@ function runPaseoCli(cli: string, args: string[], onDone: (code: number | null, 
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       windowsVerbatimArguments: true,
+      env,
     });
   } else {
-    child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"], env });
   }
   let output = "";
   child.stdout?.on("data", (chunk) => (output += chunk.toString()));
@@ -224,6 +255,57 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   let remoteAppliedModel: string | null = null;
   let remoteAppliedThinking: string | null = null;
   let titleAttempted = false;
+  const submittedUserMessages: any[] = [];
+  const pendingRemoteUiRequests = new Map<string, PendingRemoteUiRequest>();
+  let markedTmuxPane: string | null = null;
+
+  function markTmuxPane(active: boolean): void {
+    const pane = process.env.TMUX_PANE?.trim();
+    if (!pane || process.platform === "win32") return;
+    if (!active && markedTmuxPane !== pane) return;
+
+    const args = active
+      ? ["set-option", "-p", "-t", pane, "@paseo_pi_agent_pid", String(process.pid)]
+      : ["set-option", "-p", "-u", "-t", pane, "@paseo_pi_agent_pid"];
+    const child = spawn("tmux", args, { stdio: "ignore" });
+    child.on("error", (err) => debugLog(`could not ${active ? "mark" : "unmark"} tmux pane: ${String(err)}`));
+    child.unref();
+    markedTmuxPane = active ? pane : null;
+  }
+
+  function remoteUiConnected(): boolean {
+    return Boolean(client && !client.destroyed);
+  }
+
+  function finishRemoteUiRequest(id: string, value: string | undefined): void {
+    const pending = pendingRemoteUiRequests.get(id);
+    if (!pending) return;
+    pendingRemoteUiRequests.delete(id);
+    if (pending.signal && pending.abort) pending.signal.removeEventListener("abort", pending.abort);
+    pending.resolve(value);
+  }
+
+  function cancelPendingRemoteUiRequests(): void {
+    for (const id of [...pendingRemoteUiRequests.keys()]) finishRemoteUiRequest(id, undefined);
+  }
+
+  const remoteUiBridge: RemoteUiBridgeV1 = {
+    isConnected: remoteUiConnected,
+    select(title, options, settings = {}) {
+      if (!remoteUiConnected() || settings.signal?.aborted) return Promise.resolve(undefined);
+      const id = crypto.randomUUID();
+      return new Promise((resolve) => {
+        const pending: PendingRemoteUiRequest = { resolve, signal: settings.signal };
+        if (settings.signal) {
+          pending.abort = () => finishRemoteUiRequest(id, undefined);
+          settings.signal.addEventListener("abort", pending.abort, { once: true });
+        }
+        pendingRemoteUiRequests.set(id, pending);
+        send({ type: "extension_ui_request", id, method: "select", title, options });
+      });
+    },
+  };
+  (globalThis as Record<string, unknown>)[REMOTE_UI_BRIDGE_KEY] = remoteUiBridge;
 
   function paseoWsUrl(): string | null {
     const host = process.env.PASEO_HOST?.trim();
@@ -249,7 +331,9 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       debugLog("global WebSocket unavailable; cannot sync state to Paseo");
       return null;
     }
-    const ws = new WebSocketCtor(url);
+    const password = readPaseoPassword();
+    const protocols = password ? [`paseo.bearer.${password}`] : undefined;
+    const ws = new WebSocketCtor(url, protocols);
     const pending = new Map<string, (payload: any) => void>();
     debugLog(`paseo sync websocket connecting to ${url}`);
     const opened = new Promise<void>((resolve, reject) => {
@@ -404,15 +488,33 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     });
   }
 
+  function toCapturedUserEntry(entry: any): { id: string; parentId: string | null; text: string } {
+    return {
+      id: entry.id,
+      parentId: entry.parentId ?? null,
+      text: readTextContent(entry.message.content),
+    };
+  }
+
   function capturedUserEntries(ctx: ExtensionContext): Array<{ id: string; parentId: string | null; text: string }> {
     return ctx.sessionManager
       .getEntries()
       .filter((entry: any) => entry.type === "message" && entry.message?.role === "user")
-      .map((entry: any) => ({
-        id: entry.id,
-        parentId: entry.parentId ?? null,
-        text: readTextContent(entry.message.content),
-      }));
+      .map(toCapturedUserEntry);
+  }
+
+  function emitSubmittedUserEntries(ctx: ExtensionContext): void {
+    const entries = ctx.sessionManager.getEntries();
+    for (let index = 0; index < submittedUserMessages.length; index += 1) {
+      const message = submittedUserMessages[index];
+      const entry = entries.find(
+        (candidate: any) => candidate.type === "message" && candidate.message === message,
+      );
+      if (!entry) continue;
+      submittedUserMessages.splice(index, 1);
+      index -= 1;
+      notifyEvent(`${SUBMITTED_USER_ENTRY_MARKER} ${JSON.stringify({ entry: toCapturedUserEntry(entry) })}`);
+    }
   }
 
   function emitEntryCapture(ctx: ExtensionContext | null, reason: string, requestId?: string): void {
@@ -556,9 +658,11 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           autoCompactionEnabled = Boolean(cmd.enabled);
           send(success(id, type));
           return;
-        case "extension_ui_response":
-          // v1: extension UI dialogs render in the TUI only; nothing pending here.
+        case "extension_ui_response": {
+          const value = cmd.cancelled === true || typeof cmd.value !== "string" ? undefined : cmd.value;
+          finishRemoteUiRequest(String(cmd.id ?? ""), value);
           return;
+        }
         default:
           send(failure(id, type ?? "unknown", `Unsupported command for terminal-attached session: ${type}`));
       }
@@ -591,7 +695,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       }
     });
     const detach = () => {
-      if (client === socket) client = null;
+      if (client === socket) {
+        client = null;
+        cancelPendingRemoteUiRequests();
+      }
       debugLog("client disconnected");
     };
     socket.on("close", detach);
@@ -607,6 +714,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function stopServer(): void {
+    cancelPendingRemoteUiRequests();
     if (client) {
       try {
         client.destroy();
@@ -808,13 +916,18 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       if (ctx.mode !== "tui" && !force) return;
       if (!isAutoEnabled()) return;
       connectSession(ctx);
+      markTmuxPane(true);
     } catch (err) {
       debugLog(`session_start failed: ${String(err)}`);
     }
   });
 
   pi.on("session_shutdown", async () => {
+    markTmuxPane(false);
     stopServer();
+    if ((globalThis as Record<string, unknown>)[REMOTE_UI_BRIDGE_KEY] === remoteUiBridge) {
+      delete (globalThis as Record<string, unknown>)[REMOTE_UI_BRIDGE_KEY];
+    }
   });
 
   const forwardEvents = [
@@ -834,6 +947,14 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       send(event);
     });
   }
+
+  pi.on("message_end", async (event: any) => {
+    if (event.message?.role === "user") submittedUserMessages.push(event.message);
+  });
+
+  pi.on("message_start", async (event: any, ctx) => {
+    if (event.message?.role === "assistant") emitSubmittedUserEntries(ctx);
+  });
 
   // Imported terminal sessions have no title in Paseo (the UI falls back to
   // the branch name), so generate one from the first user message.
@@ -863,7 +984,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       const model = ctx.model;
       if (!model) return;
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
+      if (auth.ok === false) {
         debugLog(`title generation: no auth: ${auth.error}`);
         return;
       }
@@ -903,6 +1024,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   pi.on("turn_end", async (event, ctx) => {
     latestCtx = ctx;
     send(event);
+    emitSubmittedUserEntries(ctx);
     emitEntryCapture(ctx, "turn_end");
     void maybeGenerateSessionTitle(ctx);
   });
