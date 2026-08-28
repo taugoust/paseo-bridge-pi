@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
@@ -612,7 +613,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           send(success(id, type));
           return;
         case "abort":
-          latestCtx?.abort();
+          await abortAndWaitForIdle(latestCtx);
           send(success(id, type));
           return;
         case "get_state":
