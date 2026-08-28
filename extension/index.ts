@@ -21,12 +21,19 @@ import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
+import { coordinateMirroredSelect } from "./mirrored-select.js";
 import { normalizePiEventForPaseo } from "./tool-result-normalization.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
 type RemoteUiBridgeV1 = {
   isConnected(): boolean;
   select(title: string, options: string[], settings?: RemoteUiSelectOptions): Promise<string | undefined>;
+  selectMirrored?(
+    title: string,
+    options: string[],
+    localSelect: (signal: AbortSignal) => Promise<string | undefined>,
+    settings?: RemoteUiSelectOptions,
+  ): Promise<string | undefined>;
 };
 type PendingRemoteUiRequest = {
   resolve(value: string | undefined): void;
@@ -292,19 +299,42 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     for (const id of [...pendingRemoteUiRequests.keys()]) finishRemoteUiRequest(id, undefined);
   }
 
+  function startRemoteSelect(
+    title: string,
+    options: string[],
+    signal?: AbortSignal,
+  ): { id: string; result: Promise<string | undefined> } | null {
+    if (!remoteUiConnected() || signal?.aborted) return null;
+    const id = crypto.randomUUID();
+    const result = new Promise<string | undefined>((resolve) => {
+      const pending: PendingRemoteUiRequest = { resolve, signal };
+      if (signal) {
+        pending.abort = () => {
+          void resolvePaseoSelect(id, undefined).finally(() => finishRemoteUiRequest(id, undefined));
+        };
+        signal.addEventListener("abort", pending.abort, { once: true });
+      }
+      pendingRemoteUiRequests.set(id, pending);
+      send({ type: "extension_ui_request", id, method: "select", title, options });
+    });
+    return { id, result };
+  }
+
   const remoteUiBridge: RemoteUiBridgeV1 = {
     isConnected: remoteUiConnected,
     select(title, options, settings = {}) {
-      if (!remoteUiConnected() || settings.signal?.aborted) return Promise.resolve(undefined);
-      const id = crypto.randomUUID();
-      return new Promise((resolve) => {
-        const pending: PendingRemoteUiRequest = { resolve, signal: settings.signal };
-        if (settings.signal) {
-          pending.abort = () => finishRemoteUiRequest(id, undefined);
-          settings.signal.addEventListener("abort", pending.abort, { once: true });
-        }
-        pendingRemoteUiRequests.set(id, pending);
-        send({ type: "extension_ui_request", id, method: "select", title, options });
+      return startRemoteSelect(title, options, settings.signal)?.result ?? Promise.resolve(undefined);
+    },
+    async selectMirrored(title, options, localSelect, settings = {}) {
+      const remote = startRemoteSelect(title, options, settings.signal);
+      if (!remote) return await localSelect(settings.signal ?? new AbortController().signal);
+
+      return await coordinateMirroredSelect({
+        remoteResult: remote.result,
+        localSelect,
+        resolveLocal: (value) => resolvePaseoSelect(remote.id, value),
+        finishRemote: (value) => finishRemoteUiRequest(remote.id, value),
+        signal: settings.signal,
       });
     },
   };
@@ -326,7 +356,11 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   // state the daemon only accepts as client requests (it caches
   // model/thinking/titles and prefers the cache over anything visible
   // through the provider RPC surface).
-  function openPaseoWs(): { request: (build: (requestId: string) => Record<string, unknown>) => Promise<any>; close: () => void } | null {
+  function openPaseoWs(): {
+    request: (build: (requestId: string) => Record<string, unknown>) => Promise<any>;
+    requestWithId: (requestId: string, message: Record<string, unknown>) => Promise<any>;
+    close: () => void;
+  } | null {
     const url = paseoWsUrl();
     if (!url) return null;
     const WebSocketCtor = (globalThis as any).WebSocket;
@@ -378,25 +412,28 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         // initial state snapshot or binary frame - ignore
       }
     };
-    return {
-      async request(build) {
-        await opened;
-        const requestId = crypto.randomUUID();
-        return await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            pending.delete(requestId);
-            debugLog(`paseo sync request timed out: ${requestId}`);
-            reject(new Error("timeout"));
-          }, 5000);
-          pending.set(requestId, (payload) => {
-            clearTimeout(timer);
-            resolve(payload);
-          });
-          const message = build(requestId);
-          debugLog(`paseo sync sending ${String(message.type ?? "unknown")} (requestId=${requestId})`);
-          ws.send(JSON.stringify({ type: "session", message }));
+    async function requestWithId(requestId: string, message: Record<string, unknown>): Promise<any> {
+      await opened;
+      return await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(requestId);
+          debugLog(`paseo sync request timed out: ${requestId}`);
+          reject(new Error("timeout"));
+        }, 5000);
+        pending.set(requestId, (payload) => {
+          clearTimeout(timer);
+          resolve(payload);
         });
+        debugLog(`paseo sync sending ${String(message.type ?? "unknown")} (requestId=${requestId})`);
+        ws.send(JSON.stringify({ type: "session", message }));
+      });
+    }
+    return {
+      request(build) {
+        const requestId = crypto.randomUUID();
+        return requestWithId(requestId, build(requestId));
       },
+      requestWithId,
       close() {
         try {
           ws.close();
@@ -405,6 +442,28 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         }
       },
     };
+  }
+
+  async function resolvePaseoSelect(requestId: string, value: string | undefined): Promise<unknown> {
+    if (!currentAgentId) return null;
+    const conn = openPaseoWs();
+    if (!conn) return null;
+    try {
+      const response = value === undefined
+        ? { behavior: "deny" }
+        : { behavior: "allow", updatedInput: { answers: { Response: value } } };
+      return await conn.requestWithId(requestId, {
+        type: "agent_permission_response",
+        agentId: currentAgentId,
+        requestId,
+        response,
+      });
+    } catch (err) {
+      debugLog(`paseo mirrored selection failed for ${requestId}: ${String(err)}`);
+      return null;
+    } finally {
+      conn.close();
+    }
   }
 
   function paseoSessionRequest(buildMessage: (requestId: string) => Record<string, unknown>, label: string): void {
