@@ -26,6 +26,7 @@
   "scripts": {
     "dev-install": "node scripts/install.js",
     "dev-uninstall": "node scripts/uninstall.js",
+    "test": "node --experimental-strip-types --test test/prompt-dispatch.test.ts",
     "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --skipLibCheck extension/index.ts extension/pi-ai-compat.d.ts"
   },
   "devDependencies": {

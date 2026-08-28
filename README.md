@@ -41,6 +41,8 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 
 - Terminal sessions appear in Paseo within seconds, with live streaming
   tokens; prompts sent from the app run in the TUI (which stays usable).
+- Extension slash commands, skill commands, and prompt templates sent from
+  Paseo are dispatched by pi instead of becoming literal user prompts.
 - Model and effort changes sync both ways.
 - After your first message, a session title is generated with the current
   model and applied to the Paseo agent, the workspace (prefixed `[TUI]`), and
@@ -124,6 +126,9 @@ for development only — the supported install is the pi package flow above.
 
 ## Known limitations (v1)
 
+- Built-in interactive-only commands are not part of pi's RPC command list and
+  cannot be dispatched as prompts. Use Paseo's native controls for model and
+  thinking changes; extension commands such as `/slow-mode` do work.
 - Extension UI dialogs (`ask_user` etc.) render in the TUI only; they are not
   forwarded to Paseo.
 - Timeline rewind from Paseo is rejected for terminal-attached sessions

@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
 type RemoteUiBridgeV1 = {
@@ -565,7 +566,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     };
   }
 
-  function handlePrompt(cmd: any): void {
+  async function handlePrompt(cmd: any): Promise<void> {
     const message: string = typeof cmd.message === "string" ? cmd.message : "";
     if (message.startsWith(`/${CAPTURE_COMMAND}`)) {
       const payload = decodeCommandPayload(message.slice(CAPTURE_COMMAND.length + 1));
@@ -588,8 +589,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       ? [{ type: "text", text: message }, ...cmd.images]
       : message;
     const streaming = latestCtx ? !latestCtx.isIdle() : false;
-    pi.sendUserMessage(content as any, streaming ? { deliverAs: "followUp" } : undefined);
-    send(success(cmd.id, "prompt", { agentInvoked: true }));
+    const result = await dispatchPaseoPrompt(pi, content as any, message, streaming, (err) =>
+      debugLog(`prompt failed after acceptance: ${String(err)}`),
+    );
+    send(success(cmd.id, "prompt", result));
   }
 
   async function handleCommand(cmd: any): Promise<void> {
@@ -598,7 +601,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     try {
       switch (type) {
         case "prompt":
-          handlePrompt(cmd);
+          await handlePrompt(cmd);
           return;
         case "steer":
           pi.sendUserMessage(cmd.message, { deliverAs: "steer" });
