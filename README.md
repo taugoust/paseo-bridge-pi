@@ -44,6 +44,9 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 - Extension slash commands, skill commands, and prompt templates sent from
   Paseo are dispatched by pi instead of becoming literal user prompts.
 - Model and effort changes sync both ways.
+- Pi `subagent` fan-outs appear as one structured Paseo task card per child.
+  Each card keeps a stable identity across live updates and history replay,
+  shows that child's task/model and current output, and resolves independently.
 - After your first message, a session title is generated with the current
   model and applied to the Paseo agent, the workspace (prefixed `[TUI]`), and
   pi's session list.
@@ -135,6 +138,9 @@ for development only — the supported install is the pi package flow above.
   (use Fork instead).
 - Paseo's MCP tool injection (`pi-mcp-adapter`) does not apply to adopted
   sessions.
+- Bridge-projected subagents use Paseo's existing structured task cards rather
+  than its native provider-subagent track. Populating that track would require
+  a Paseo provider change; the bridge intentionally does not modify Paseo.
 - Relay / pairing-URL daemon setups (`PASEO_HOST` with a URL) skip the WS
   state sync; import still works via the CLI.
 - If the TUI exits and Paseo later resumes the session itself, do not start a

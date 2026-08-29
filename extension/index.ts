@@ -23,6 +23,7 @@ import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
 import { coordinateMirroredSelect } from "./mirrored-select.js";
 import { normalizePiEventForPaseo } from "./tool-result-normalization.js";
+import { SubagentTaskProjection, projectSubagentMessages } from "./subagent-task-projection.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
 type RemoteUiBridgeV1 = {
@@ -268,6 +269,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   const submittedUserMessages: any[] = [];
   const pendingRemoteUiRequests = new Map<string, PendingRemoteUiRequest>();
   let markedTmuxPane: string | null = null;
+  const subagentTaskProjection = new SubagentTaskProjection();
 
   function markTmuxPane(active: boolean): void {
     const pane = process.env.TMUX_PANE?.trim();
@@ -682,7 +684,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         case "get_messages": {
           const entries = latestCtx?.sessionManager.buildContextEntries() ?? [];
           const messages = entries.filter((e: any) => e.type === "message").map((e: any) => e.message);
-          send(success(id, type, { messages }));
+          send(success(id, type, { messages: projectSubagentMessages(messages) }));
           return;
         }
         case "get_available_models":
@@ -1008,7 +1010,8 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   for (const eventName of forwardEvents) {
     (pi as any).on(eventName, async (event: unknown, ctx: ExtensionContext) => {
       latestCtx = ctx;
-      send(normalizePiEventForPaseo(event));
+      const normalized = normalizePiEventForPaseo(event);
+      for (const projected of subagentTaskProjection.project(normalized)) send(projected);
     });
   }
 
