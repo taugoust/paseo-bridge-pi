@@ -84,6 +84,37 @@ test("projects historical messages with the same stable child ids", () => {
   assert.equal(projected[2].content[0].text, "two");
 });
 
+test("drops cumulative child transcripts and bounds projected timeline details", () => {
+  const projection = new SubagentTaskProjection();
+  projection.project({
+    type: "tool_execution_start",
+    toolCallId: "large",
+    toolName: "subagent",
+    args: { task: "inspect" },
+  });
+  const [update] = projection.project({
+    type: "tool_execution_update",
+    toolCallId: "large",
+    toolName: "subagent",
+    partialResult: {
+      details: {
+        results: [{
+          task: "inspect",
+          lastAssistantText: "x".repeat(100_000),
+          messages: Array.from({ length: 100 }, () => ({ role: "assistant", content: "private transcript" })),
+          completedTools: Array.from({ length: 100 }, () => ({ name: "bash", result: "large" })),
+          usage: { input: 12, output: 34 },
+          terminal: { state: "running" },
+        }],
+      },
+    },
+  });
+  assert.equal("messages" in update.partialResult.details, false);
+  assert.equal("completedTools" in update.partialResult.details, false);
+  assert.deepEqual(update.partialResult.details.usage, { input: 12, output: 34 });
+  assert.ok(Buffer.byteLength(JSON.stringify(update), "utf8") < 24 * 1024);
+});
+
 test("leaves non-subagent and draft disposition events unchanged", () => {
   const projection = new SubagentTaskProjection();
   const bash = { type: "tool_execution_start", toolCallId: "b", toolName: "bash", args: { command: "true" } };

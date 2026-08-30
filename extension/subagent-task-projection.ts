@@ -54,6 +54,15 @@ function resultChildren(result: unknown): RecordValue[] {
   return Array.isArray(children) ? children.filter(isRecord) : [];
 }
 
+const MAX_PROJECTED_LOG_BYTES = 16 * 1024;
+const MAX_PROJECTED_TEXT_BYTES = 2 * 1024;
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength <= maxBytes) return value;
+  return `${bytes.subarray(0, maxBytes).toString("utf8")}\n\n… truncated`;
+}
+
 function childLog(child: RecordValue, fallback?: unknown): string {
   const terminal = isRecord(child.terminal) ? child.terminal : undefined;
   const toolCall = isRecord(child.lastToolCall) ? child.lastToolCall : isRecord(child.activeTool) ? child.activeTool : undefined;
@@ -65,13 +74,16 @@ function childLog(child: RecordValue, fallback?: unknown): string {
     text(child.lastToolResult),
     text(child.errorMessage) ?? text(child.error) ?? text(terminal?.message),
   ].filter((part): part is string => Boolean(part));
-  if (parts.length) return [...new Set(parts)].join("\n\n");
-  if (typeof fallback === "string") return fallback;
+  if (parts.length) return truncateUtf8([...new Set(parts)].join("\n\n"), MAX_PROJECTED_LOG_BYTES);
+  if (typeof fallback === "string") return truncateUtf8(fallback, MAX_PROJECTED_LOG_BYTES);
   if (isRecord(fallback) && Array.isArray(fallback.content)) {
-    return fallback.content
-      .filter((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string")
-      .map((part: RecordValue) => part.text)
-      .join("\n");
+    return truncateUtf8(
+      fallback.content
+        .filter((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string")
+        .map((part: RecordValue) => part.text)
+        .join("\n"),
+      MAX_PROJECTED_LOG_BYTES,
+    );
   }
   return "";
 }
@@ -90,10 +102,61 @@ function childFailed(child: RecordValue): boolean {
   );
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function compactUsage(value: unknown): RecordValue | undefined {
+  if (!isRecord(value)) return undefined;
+  const usage = Object.fromEntries(
+    ["input", "output", "cacheRead", "cacheWrite", "cost", "contextTokens", "contextWindow", "turns"]
+      .flatMap((key) => {
+        const number = finiteNumber(value[key]);
+        return number === undefined ? [] : [[key, number]];
+      }),
+  );
+  return Object.keys(usage).length ? usage : undefined;
+}
+
+function compactTerminal(value: unknown): RecordValue | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    ...(text(value.state) ? { state: truncateUtf8(text(value.state)!, 64) } : {}),
+    ...(finiteNumber(value.exitCode ?? value.exit_code) !== undefined
+      ? { exitCode: finiteNumber(value.exitCode ?? value.exit_code) }
+      : {}),
+    ...(text(value.message) ? { message: truncateUtf8(text(value.message)!, 512) } : {}),
+  };
+}
+
+function compactChildDetails(child: RecordValue): RecordValue {
+  const details: RecordValue = {
+    ...(text(child.label) ? { label: truncateUtf8(text(child.label)!, 256) } : {}),
+    ...(text(child.task) ? { task: truncateUtf8(text(child.task)!, 1024) } : {}),
+    ...(text(child.model) ? { model: truncateUtf8(text(child.model)!, 256) } : {}),
+    ...(text(child.stopReason ?? child.stop_reason)
+      ? { stopReason: truncateUtf8(text(child.stopReason ?? child.stop_reason)!, 128) }
+      : {}),
+    ...(finiteNumber(child.exitCode ?? child.exit_code) !== undefined
+      ? { exitCode: finiteNumber(child.exitCode ?? child.exit_code) }
+      : {}),
+    ...(compactUsage(child.usage) ? { usage: compactUsage(child.usage) } : {}),
+    ...(compactTerminal(child.terminal) ? { terminal: compactTerminal(child.terminal) } : {}),
+    ...(text(child.errorMessage ?? child.error)
+      ? { errorMessage: truncateUtf8(text(child.errorMessage ?? child.error)!, 1024) }
+      : {}),
+    ...(text(child.lastAssistantText)
+      ? { lastAssistantText: truncateUtf8(text(child.lastAssistantText)!, MAX_PROJECTED_TEXT_BYTES) }
+      : {}),
+    ...(text(child.final) ? { final: truncateUtf8(text(child.final)!, MAX_PROJECTED_TEXT_BYTES) } : {}),
+  };
+  return details;
+}
+
 function projectedResult(child: RecordValue, fallback?: unknown): RecordValue {
   return {
     content: [{ type: "text", text: childLog(child, fallback) }],
-    details: child,
+    details: compactChildDetails(child),
   };
 }
 
@@ -195,7 +258,7 @@ export function projectSubagentMessages(messages: unknown[]): unknown[] {
             ...message,
             toolCallId: childId(projection.parentId, spec.index),
             content: [{ type: "text", text: childLog(child, message) }],
-            details: child,
+            details: compactChildDetails(child),
             isError: childFailed(child) || (children.length === 0 && message.isError === true),
           };
         }),
