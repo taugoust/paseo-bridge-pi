@@ -84,6 +84,33 @@ test("projects historical messages with the same stable child ids", () => {
   assert.equal(projected[2].content[0].text, "two");
 });
 
+test("deduplicates unchanged siblings and rate-limits streaming text", () => {
+  let now = 1_000;
+  const projection = new SubagentTaskProjection(() => now);
+  projection.project({
+    type: "tool_execution_start",
+    toolCallId: "stream",
+    toolName: "subagent",
+    args: { tasks: [{ task: "one" }, { task: "two" }] },
+  });
+  const update = (firstText: string, secondText = "idle") => projection.project({
+    type: "tool_execution_update",
+    toolCallId: "stream",
+    toolName: "subagent",
+    partialResult: { details: { results: [
+      { task: "one", lastAssistantText: firstText, terminal: { state: "running" } },
+      { task: "two", lastAssistantText: secondText, terminal: { state: "running" } },
+    ] } },
+  });
+  assert.equal(update("a").length, 2);
+  now += 100;
+  assert.equal(update("ab").length, 0);
+  now += 500;
+  const next = update("abc");
+  assert.equal(next.length, 1);
+  assert.equal(next[0].toolCallId, "stream::paseo-child::0");
+});
+
 test("drops cumulative child transcripts and bounds projected timeline details", () => {
   const projection = new SubagentTaskProjection();
   projection.project({

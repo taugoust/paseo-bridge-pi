@@ -6,9 +6,16 @@ type ChildSpec = {
   agent?: string;
 };
 
+type ProjectedUpdateState = {
+  fingerprint: string;
+  structuralFingerprint: string;
+  emittedAt: number;
+};
+
 type Projection = {
   parentId: string;
   specs: ChildSpec[];
+  updates: Map<number, ProjectedUpdateState>;
 };
 
 function isRecord(value: unknown): value is RecordValue {
@@ -165,8 +172,39 @@ function childForSpec(children: RecordValue[], spec: ChildSpec): RecordValue | u
   return byStep ?? children[spec.index];
 }
 
+const PROJECTED_TEXT_UPDATE_INTERVAL_MS = 500;
+
+function updateFingerprint(child: RecordValue, fallback?: unknown): string {
+  return JSON.stringify(projectedResult(child, fallback));
+}
+
+function structuralFingerprint(child: RecordValue): string {
+  const terminal = compactTerminal(child.terminal);
+  const activeTool = isRecord(child.activeTool)
+    ? child.activeTool
+    : isRecord(child.lastToolCall)
+      ? child.lastToolCall
+      : undefined;
+  return JSON.stringify({
+    terminal,
+    stopReason: text(child.stopReason ?? child.stop_reason),
+    exitCode: finiteNumber(child.exitCode ?? child.exit_code),
+    error: text(child.errorMessage ?? child.error),
+    activeTool: activeTool
+      ? { name: text(activeTool.name), args: isRecord(activeTool.args) ? activeTool.args : undefined }
+      : undefined,
+    completedToolCount: Array.isArray(child.completedTools) ? child.completedTools.length : undefined,
+    turns: isRecord(child.usage) ? finiteNumber(child.usage.turns) : undefined,
+  });
+}
+
 export class SubagentTaskProjection {
   private readonly active = new Map<string, Projection>();
+  private readonly now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.now = now;
+  }
 
   project(event: unknown): RecordValue[] {
     if (!isRecord(event) || !text(event.type)) return [event as RecordValue];
@@ -174,7 +212,7 @@ export class SubagentTaskProjection {
       if (event.toolName !== "subagent" || typeof event.toolCallId !== "string") return [event];
       const specs = childSpecs(event.args);
       if (!specs.length) return [event];
-      const projection = { parentId: event.toolCallId, specs };
+      const projection = { parentId: event.toolCallId, specs, updates: new Map<number, ProjectedUpdateState>() };
       this.active.set(event.toolCallId, projection);
       return specs.map((spec) => startEvent(projection, spec));
     }
@@ -184,27 +222,44 @@ export class SubagentTaskProjection {
     if (!parent) return [event];
     const result = event.type === "tool_execution_update" ? event.partialResult : event.result;
     const children = resultChildren(result);
-    const projected = parent.specs.map((spec) => {
-      const child = childForSpec(children, spec) ?? {
+    const projected = parent.specs.flatMap<RecordValue>((spec): RecordValue[] => {
+      const observedChild = childForSpec(children, spec);
+      const child = observedChild ?? {
         task: spec.task,
         errorMessage: event.type === "tool_execution_end" ? "Subagent did not start" : undefined,
       };
       if (event.type === "tool_execution_update") {
-        return {
+        if (!observedChild) return [];
+        const fingerprint = updateFingerprint(child, result);
+        const structure = structuralFingerprint(child);
+        const previous = parent.updates.get(spec.index);
+        const now = this.now();
+        if (
+          previous?.fingerprint === fingerprint ||
+          (previous?.structuralFingerprint === structure && now - previous.emittedAt < PROJECTED_TEXT_UPDATE_INTERVAL_MS)
+        ) {
+          return [];
+        }
+        parent.updates.set(spec.index, {
+          fingerprint,
+          structuralFingerprint: structure,
+          emittedAt: now,
+        });
+        return [{
           type: "tool_execution_update",
           toolCallId: childId(parent.parentId, spec.index),
           toolName: "subagent",
           args: { task: spec.task, ...(spec.agent ? { agent: spec.agent } : {}) },
           partialResult: projectedResult(child, result),
-        };
+        }];
       }
-      return {
+      return [{
         type: "tool_execution_end",
         toolCallId: childId(parent.parentId, spec.index),
         toolName: "subagent",
         result: projectedResult(child, result),
         isError: childFailed(child) || (children.length === 0 && event.isError === true),
-      };
+      }];
     });
     if (event.type === "tool_execution_end") this.active.delete(parent.parentId);
     return projected;
@@ -231,7 +286,7 @@ export function projectSubagentMessages(messages: unknown[]): unknown[] {
           content.push(part);
           continue;
         }
-        const projection = { parentId: part.id, specs };
+        const projection = { parentId: part.id, specs, updates: new Map<number, ProjectedUpdateState>() };
         calls.set(part.id, projection);
         content.push(
           ...specs.map((spec) => ({
