@@ -4,9 +4,19 @@ import {
   buildTuiArgs,
   buildTuiShellCommand,
   findSourcePane,
+  forkStartupTimeoutMs,
   launchForkTui,
   parseTmuxPanes,
+  selectForkTuiBin,
 } from "../shim/tmux-fork.js";
+
+test("forkStartupTimeoutMs allows slow supervised startup but remains bounded", () => {
+  assert.equal(forkStartupTimeoutMs(undefined), 120_000);
+  assert.equal(forkStartupTimeoutMs("45000"), 45_000);
+  assert.throws(() => forkStartupTimeoutMs("999"), /between 1000 and 600000/);
+  assert.throws(() => forkStartupTimeoutMs("600001"), /between 1000 and 600000/);
+  assert.throws(() => forkStartupTimeoutMs("not-a-number"), /between 1000 and 600000/);
+});
 
 test("buildTuiArgs replaces RPC mode and session flags with the fork", () => {
   assert.deepEqual(
@@ -42,9 +52,9 @@ test("findSourcePane validates the session runtime record against tmux", () => {
   assert.deepEqual(
     findSourcePane("/sessions/source.jsonl", {
       spawnSync,
-      runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", pid: 456 },
+      runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", pid: 456, tuiKind: "unsafe" },
     }),
-    { sessionName: "work", windowId: "@2", paneId: "%3", agentPid: 456, socketPath: null },
+    { sessionName: "work", windowId: "@2", paneId: "%3", agentPid: 456, socketPath: null, tuiKind: "unsafe" },
   );
 });
 
@@ -56,7 +66,7 @@ test("findSourcePane uses the source tmux server socket", () => {
   };
   const pane = findSourcePane("/sessions/source.jsonl", {
     spawnSync,
-    runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", tmuxSocket: "/run/user/1000/tmux/default", pid: 456 },
+    runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", tmuxSocket: "/run/user/1000/tmux/default", pid: 456, tuiKind: "supervised" },
   });
   assert.deepEqual(calls[0].slice(0, 2), ["-S", "/run/user/1000/tmux/default"]);
   assert.equal(pane.socketPath, "/run/user/1000/tmux/default");
@@ -67,9 +77,30 @@ test("findSourcePane rejects a stale runtime record", () => {
   assert.throws(
     () => findSourcePane("/sessions/source.jsonl", {
       spawnSync,
-      runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", pid: 456 },
+      runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", pid: 456, tuiKind: "supervised" },
     }),
     /stale/,
+  );
+});
+
+test("findSourcePane rejects records written before trust-mode propagation", () => {
+  const spawnSync = () => ({ status: 0, stdout: "work\t@2\t%3\t456\n", stderr: "" });
+  assert.throws(
+    () => findSourcePane("/sessions/source.jsonl", {
+      spawnSync,
+      runtimeRecord: { sessionFile: "/sessions/source.jsonl", tmuxPane: "%3", pid: 456 },
+    }),
+    /reload the source session/,
+  );
+});
+
+test("selectForkTuiBin preserves the source session trust mode", () => {
+  const launchers = { supervised: "/bin/pi", unsafe: "/bin/pi-unsafe" };
+  assert.equal(selectForkTuiBin({ tuiKind: "supervised" }, launchers), "/bin/pi");
+  assert.equal(selectForkTuiBin({ tuiKind: "unsafe" }, launchers), "/bin/pi-unsafe");
+  assert.throws(
+    () => selectForkTuiBin({ tuiKind: "unsafe" }, { supervised: "/bin/pi" }),
+    /no unsafe Pi TUI launcher/,
   );
 });
 

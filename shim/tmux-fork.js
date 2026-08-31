@@ -3,6 +3,18 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+const DEFAULT_FORK_START_TIMEOUT_MS = 120_000;
+const MAX_FORK_START_TIMEOUT_MS = 600_000;
+
+export function forkStartupTimeoutMs(value = process.env.PI_PASEO_FORK_START_TIMEOUT_MS) {
+  if (value == null || String(value).trim() === "") return DEFAULT_FORK_START_TIMEOUT_MS;
+  const milliseconds = Number(value);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1_000 || milliseconds > MAX_FORK_START_TIMEOUT_MS) {
+    throw new Error("PI_PASEO_FORK_START_TIMEOUT_MS must be an integer between 1000 and 600000");
+  }
+  return milliseconds;
+}
+
 export function pipePathForAgent(agentId) {
   const dir = process.env.XDG_RUNTIME_DIR
     ? path.join(process.env.XDG_RUNTIME_DIR, "pi-paseo")
@@ -46,6 +58,9 @@ export function findSourcePane(sourceSessionFile, options = {}) {
   const run = options.spawnSync ?? spawnSync;
   const record = options.runtimeRecord ?? (options.readRuntimeRecord ?? readRuntimeRecord)(sourceSessionFile);
   if (!record?.tmuxPane) throw new Error("the source Pi session has no live tmux runtime record");
+  if (record.tuiKind !== "supervised" && record.tuiKind !== "unsafe") {
+    throw new Error("the source Pi runtime record has no valid TUI trust mode; reload the source session");
+  }
   const socketArgs = record.tmuxSocket ? ["-S", record.tmuxSocket] : [];
   const result = run("tmux", [
     ...socketArgs,
@@ -62,7 +77,13 @@ export function findSourcePane(sourceSessionFile, options = {}) {
   if (panes.length !== 1 || panes[0].paneId !== record.tmuxPane || panes[0].agentPid !== record.pid) {
     throw new Error("the source Pi tmux runtime record is stale");
   }
-  return { ...panes[0], socketPath: record.tmuxSocket || null };
+  return { ...panes[0], socketPath: record.tmuxSocket || null, tuiKind: record.tuiKind };
+}
+
+export function selectForkTuiBin(sourcePane, launchers) {
+  const tuiBin = sourcePane.tuiKind === "supervised" ? launchers.supervised : launchers.unsafe;
+  if (!tuiBin) throw new Error(`no ${sourcePane.tuiKind} Pi TUI launcher is configured for forks`);
+  return tuiBin;
 }
 
 export function buildTuiArgs(rpcArgs, sessionFile) {

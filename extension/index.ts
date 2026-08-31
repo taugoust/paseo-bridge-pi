@@ -883,6 +883,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         agentId: currentAgentId,
         cwd,
         pid: process.pid,
+        tuiKind: process.env.PI_SUPERVISED === "1" ? "supervised" : "unsafe",
         tmuxPane: process.env.TMUX_PANE?.trim() || markedTmuxPane,
         tmuxSocket: process.env.TMUX?.split(",", 1)[0]?.trim() || null,
       }, null, 2)}\n`, { mode: 0o600 });

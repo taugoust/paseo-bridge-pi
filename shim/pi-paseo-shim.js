@@ -10,7 +10,14 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { createForkedSession, resolveForkPlan } from "./fork-support.js";
-import { killTmuxPane, launchForkTui, pipePathForAgent } from "./tmux-fork.js";
+import {
+  findSourcePane,
+  forkStartupTimeoutMs,
+  killTmuxPane,
+  launchForkTui,
+  pipePathForAgent,
+  selectForkTuiBin,
+} from "./tmux-fork.js";
 
 const CONNECT_TIMEOUT_MS = 500;
 const args = process.argv.slice(2);
@@ -189,7 +196,7 @@ function commandSuccessWithoutAgent(command) {
   });
 }
 
-async function waitForSocket(socketPath, timeoutMs = 15_000) {
+async function waitForSocket(socketPath, timeoutMs = forkStartupTimeoutMs()) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const socket = await tryConnect(socketPath);
@@ -202,8 +209,9 @@ async function waitForSocket(socketPath, timeoutMs = 15_000) {
 function forkAwarePassthrough() {
   const real = resolveRealPi();
   const targetAgentId = process.env.PASEO_AGENT_ID?.trim();
-  const tuiBin = process.env.PI_PASEO_TUI_BIN?.trim();
-  if (!real || !targetAgentId || !tuiBin || process.platform === "win32") {
+  const supervisedTuiBin = process.env.PI_PASEO_TUI_BIN?.trim();
+  const unsafeTuiBin = process.env.PI_PASEO_UNSAFE_TUI_BIN?.trim();
+  if (!real || !targetAgentId || (!supervisedTuiBin && !unsafeTuiBin) || process.platform === "win32") {
     passthrough();
     return;
   }
@@ -227,9 +235,15 @@ function forkAwarePassthrough() {
   const switchToFork = async (command) => {
     const plan = resolveForkPlan({ command, targetAgentId });
     if (!plan) return false;
+    const sourcePane = findSourcePane(plan.sourceSessionFile);
+    const tuiBin = selectForkTuiBin(sourcePane, {
+      supervised: supervisedTuiBin,
+      unsafe: unsafeTuiBin,
+    });
     const forkSessionFile = createForkedSession(plan.sourceSessionFile, plan.sourceEntryId);
     const launched = launchForkTui({
       placement: plan.placement,
+      sourcePane,
       sourceSessionFile: plan.sourceSessionFile,
       forkSessionFile,
       cwd: plan.fork.cwd || process.env.PASEO_AGENT_CWD || process.cwd(),

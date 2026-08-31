@@ -126,11 +126,13 @@ for development only — the supported install is the pi package flow above.
 | `PASEO_CLI` | Path to the paseo CLI used for registration. |
 | `PASEO_HOST` | Forwarded to `paseo import --host`. |
 | `PI_REAL_BIN` | Shim: path to the real pi binary (or its `cli.js`). |
-| `PI_PASEO_TUI_BIN` | Supervised interactive `pi` launcher used to turn submitted Paseo forks into tmux-backed TUI sessions. When unset, Paseo keeps its native text-history fork behavior. |
+| `PI_PASEO_TUI_BIN` | Supervised interactive `pi` launcher used for forks whose source session is supervised. |
+| `PI_PASEO_UNSAFE_TUI_BIN` | Interactive `pi-unsafe` launcher used for forks whose source session is unsafe. When neither TUI launcher is configured, Paseo keeps its native text-history fork behavior. |
+| `PI_PASEO_FORK_START_TIMEOUT_MS` | Bounded TUI bridge startup allowance in milliseconds (default `120000`, range `1000`–`600000`) for large session files. |
 
 ## Paseo forks in tmux
 
-When `PI_PASEO_TUI_BIN` is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response, and replaces the temporary RPC backend with an interactive TUI:
+When a TUI launcher is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response, and replaces the temporary RPC backend with an interactive TUI. The source runtime record selects the matching trust mode: a supervised `pi` source launches supervised `pi`, while a `pi-unsafe` source launches `pi-unsafe`.
 
 - **Fork in new tab** creates a pane in the source agent's tmux window because Paseo assigns both agents to the same workspace.
 - **Fork in new workspace** creates a window in the source agent's tmux session because Paseo assigns a different workspace.
