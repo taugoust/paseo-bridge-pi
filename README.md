@@ -126,6 +126,18 @@ for development only — the supported install is the pi package flow above.
 | `PASEO_CLI` | Path to the paseo CLI used for registration. |
 | `PASEO_HOST` | Forwarded to `paseo import --host`. |
 | `PI_REAL_BIN` | Shim: path to the real pi binary (or its `cli.js`). |
+| `PI_PASEO_TUI_BIN` | Supervised interactive `pi` launcher used to turn submitted Paseo forks into tmux-backed TUI sessions. When unset, Paseo keeps its native text-history fork behavior. |
+
+## Paseo forks in tmux
+
+When `PI_PASEO_TUI_BIN` is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response, and replaces the temporary RPC backend with an interactive TUI:
+
+- **Fork in new tab** creates a pane in the source agent's tmux window because Paseo assigns both agents to the same workspace.
+- **Fork in new workspace** creates a window in the source agent's tmux session because Paseo assigns a different workspace.
+
+The fork is created when the draft is submitted, not when the Fork menu item is clicked. The bridge removes Paseo's text history from the forwarded prompt because the native Pi branch already contains that context. An attachment-only submission creates an idle fork; a submitted message starts the new branch with that message.
+
+Source and boundary resolution is deliberately fail-closed. The source title, cwd, and selected assistant text must resolve to exactly one live bridged session entry. Ambiguous or stale matches return an error rather than falling back to a potentially incorrect branch. Conversation state is forked, but both agents continue to share the current filesystem.
 
 ## Known limitations (v1)
 

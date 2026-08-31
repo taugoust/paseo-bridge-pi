@@ -52,8 +52,12 @@ const COMMAND_RESULT_MARKER = "PASEO_COMMAND_RESULT";
 const CAPTURE_COMMAND = "paseo_capture_entries";
 const TREE_COMMAND = "paseo_tree";
 
-// Keep in sync with shim/pi-paseo-shim.js (pipePathForSession).
+// Keep in sync with shim/pi-paseo-shim.js (pipePathForSession). A TUI
+// created for an existing Paseo agent uses a stable agent socket because its
+// session file does not exist until the fork prompt has been intercepted.
 function pipePathForSession(sessionFile: string): string {
+  const assignedSocket = process.env.PI_PASEO_AGENT_SOCKET?.trim();
+  if (assignedSocket) return assignedSocket;
   let normalized = path.resolve(sessionFile);
   if (process.platform === "win32") normalized = normalized.toLowerCase();
   const hash = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 20);
@@ -861,6 +865,42 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   const agentMapFile = path.join(os.homedir(), ".pi", "paseo-bridge", "agents.json");
+  const runtimeRegistryDir = path.join(os.homedir(), ".pi", "paseo-bridge", "runtimes");
+
+  function runtimeRecordFile(sessionFile: string): string {
+    const key = crypto.createHash("sha256").update(agentMapKey(sessionFile)).digest("hex");
+    return path.join(runtimeRegistryDir, `${key}.json`);
+  }
+
+  function writeRuntimeRecord(sessionFile: string, cwd: string): void {
+    try {
+      fs.mkdirSync(runtimeRegistryDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(runtimeRegistryDir, 0o700);
+      const destination = runtimeRecordFile(sessionFile);
+      const temporary = `${destination}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, `${JSON.stringify({
+        sessionFile: path.resolve(sessionFile),
+        agentId: currentAgentId,
+        cwd,
+        pid: process.pid,
+        tmuxPane: process.env.TMUX_PANE?.trim() || markedTmuxPane,
+        tmuxSocket: process.env.TMUX?.split(",", 1)[0]?.trim() || null,
+      }, null, 2)}\n`, { mode: 0o600 });
+      fs.renameSync(temporary, destination);
+    } catch (err) {
+      debugLog(`could not write runtime record: ${String(err)}`);
+    }
+  }
+
+  function removeRuntimeRecord(sessionFile: string): void {
+    try {
+      const destination = runtimeRecordFile(sessionFile);
+      const record = JSON.parse(fs.readFileSync(destination, "utf8"));
+      if (record?.pid === process.pid) fs.unlinkSync(destination);
+    } catch {
+      // absent, stale, or replaced by a newer owner
+    }
+  }
 
   function agentMapKey(sessionFile: string): string {
     const resolved = path.resolve(sessionFile);
@@ -889,6 +929,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
 
   function adoptAgent(agentId: string, reused: boolean): void {
     currentAgentId = agentId;
+    if (currentSessionFile && latestCtx) writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
     debugLog(`paseo agent id: ${agentId}${reused ? " (reused)" : ""}`);
     // Align Paseo's cached model/thinking with the TUI's live values. The
     // import-time descriptor scan can be stale or empty.
@@ -901,9 +942,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function registerWithPaseo(sessionFile: string, cwd: string): void {
-    if (process.env.PI_PASEO_BRIDGE_NO_IMPORT) return;
     if (importAttempted.has(sessionFile)) return;
     importAttempted.add(sessionFile);
+    const assignedAgentId = process.env.PI_PASEO_EXISTING_AGENT_ID?.trim();
+    if (assignedAgentId) {
+      writeAgentMapEntry(sessionFile, assignedAgentId);
+      adoptAgent(assignedAgentId, true);
+      return;
+    }
+    if (process.env.PI_PASEO_BRIDGE_NO_IMPORT) return;
     const cli = resolvePaseoCli();
     if (!cli) {
       debugLog("paseo CLI not found; session will not auto-appear (set PASEO_CLI)");
@@ -970,6 +1017,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       stopServer();
       startServer(file);
     }
+    writeRuntimeRecord(file, ctx.cwd);
     importAttempted.delete(file);
     registerWithPaseo(file, ctx.cwd);
     return "Connecting session to Paseo...";
@@ -989,6 +1037,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    if (currentSessionFile) removeRuntimeRecord(currentSessionFile);
     markTmuxPane(false);
     stopServer();
     if ((globalThis as Record<string, unknown>)[REMOTE_UI_BRIDGE_KEY] === remoteUiBridge) {

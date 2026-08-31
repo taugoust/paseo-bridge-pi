@@ -9,6 +9,8 @@ import os from "node:os";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { createForkedSession, resolveForkPlan } from "./fork-support.js";
+import { killTmuxPane, launchForkTui, pipePathForAgent } from "./tmux-fork.js";
 
 const CONNECT_TIMEOUT_MS = 500;
 const args = process.argv.slice(2);
@@ -167,25 +169,184 @@ function passthrough() {
   });
 }
 
+function commandFailure(command, error) {
+  writeJsonLine({
+    type: "response",
+    ...(command?.id ? { id: command.id } : {}),
+    command: typeof command?.type === "string" ? command.type : "prompt",
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function commandSuccessWithoutAgent(command) {
+  writeJsonLine({
+    type: "response",
+    ...(command?.id ? { id: command.id } : {}),
+    command: "prompt",
+    success: true,
+    data: { agentInvoked: false },
+  });
+}
+
+async function waitForSocket(socketPath, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const socket = await tryConnect(socketPath);
+    if (socket) return socket;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("timed out waiting for the forked Pi TUI bridge socket");
+}
+
+function forkAwarePassthrough() {
+  const real = resolveRealPi();
+  const targetAgentId = process.env.PASEO_AGENT_ID?.trim();
+  const tuiBin = process.env.PI_PASEO_TUI_BIN?.trim();
+  if (!real || !targetAgentId || !tuiBin || process.platform === "win32") {
+    passthrough();
+    return;
+  }
+
+  const child = spawn(real.command, [...real.prefix, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+  let backend = child.stdin;
+  let switched = false;
+  let firstPromptSeen = false;
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+  child.on("error", (error) => {
+    if (!switched) {
+      process.stderr.write(`pi-paseo-shim: failed to spawn real pi: ${error.message}\n`);
+      process.exit(1);
+    }
+  });
+  child.on("exit", (code, signal) => {
+    if (!switched) process.exit(signal ? 1 : (code ?? 1));
+  });
+
+  const switchToFork = async (command) => {
+    const plan = resolveForkPlan({ command, targetAgentId });
+    if (!plan) return false;
+    const forkSessionFile = createForkedSession(plan.sourceSessionFile, plan.sourceEntryId);
+    const launched = launchForkTui({
+      placement: plan.placement,
+      sourceSessionFile: plan.sourceSessionFile,
+      forkSessionFile,
+      cwd: plan.fork.cwd || process.env.PASEO_AGENT_CWD || process.cwd(),
+      agentId: targetAgentId,
+      tuiBin,
+      rpcArgs: args,
+    });
+    let socket;
+    try {
+      socket = await waitForSocket(launched.socketPath);
+    } catch (error) {
+      killTmuxPane(launched.paneId, { socketPath: launched.tmuxSocket });
+      throw error;
+    }
+
+    switched = true;
+    child.stdout.unpipe(process.stdout);
+    child.kill("SIGTERM");
+    backend = socket;
+    socket.setNoDelay?.(true);
+    socket.pipe(process.stdout);
+    socket.on("close", () => {
+      backend = null;
+      writeJsonLine({ type: "process_exit", error: "The forked terminal Pi session has ended." });
+    });
+    socket.on("error", () => {
+      backend = null;
+    });
+
+    if (plan.nextPrompt) {
+      socket.write(`${JSON.stringify({ ...command, message: plan.nextPrompt })}\n`);
+    } else {
+      commandSuccessWithoutAgent(command);
+    }
+    return true;
+  };
+
+  const handleLine = async (line) => {
+    if (!line.trim()) return;
+    let command;
+    try {
+      command = JSON.parse(line);
+    } catch {
+      backend?.write(`${line}\n`);
+      return;
+    }
+    if (!switched && !firstPromptSeen && command?.type === "prompt") {
+      firstPromptSeen = true;
+      try {
+        if (await switchToFork(command)) return;
+      } catch (error) {
+        commandFailure(command, error);
+        return;
+      }
+    }
+    if (!backend) {
+      commandFailure(command, "The terminal Pi session is no longer running");
+      return;
+    }
+    backend.write(`${line}\n`);
+  };
+
+  let buffer = "";
+  let queue = Promise.resolve();
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) break;
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      queue = queue.then(() => handleLine(line)).catch((error) => {
+        process.stderr.write(`pi-paseo-shim: fork relay failed: ${String(error)}\n`);
+      });
+    }
+  });
+  process.stdin.on("end", () => {
+    queue = queue.then(async () => {
+      if (buffer.trim()) await handleLine(buffer.replace(/\r$/, ""));
+      backend?.end();
+    });
+  });
+  process.stdin.resume();
+
+  const shutdown = () => {
+    if (!switched) child.kill("SIGTERM");
+    process.exit(0);
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+}
+
 async function main() {
   const sessionFile = extractSessionArg(args);
   if (sessionFile) {
-    const pipePath = pipePathForSession(sessionFile);
-    const socket = await tryConnect(pipePath);
-    if (socket) {
-      bridge(socket, sessionFile);
-      return;
-    }
-    if (process.platform !== "win32") {
-      // A socket file that refuses connections is stale from a crash.
-      try {
-        fs.unlinkSync(pipePath);
-      } catch {
-        // absent or not ours - nothing to clean
+    const assignedAgentId = process.env.PASEO_AGENT_ID?.trim();
+    const candidatePaths = [
+      ...(assignedAgentId ? [pipePathForAgent(assignedAgentId)] : []),
+      pipePathForSession(sessionFile),
+    ];
+    for (const pipePath of [...new Set(candidatePaths)]) {
+      const socket = await tryConnect(pipePath);
+      if (socket) {
+        bridge(socket, sessionFile);
+        return;
+      }
+      if (process.platform !== "win32") {
+        // A socket file that refuses connections is stale from a crash.
+        try {
+          fs.unlinkSync(pipePath);
+        } catch {
+          // absent or not ours - nothing to clean
+        }
       }
     }
   }
-  passthrough();
+  forkAwarePassthrough();
 }
 
 main();
