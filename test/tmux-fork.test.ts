@@ -6,6 +6,7 @@ import {
   findSourcePane,
   forkStartupTimeoutMs,
   isPaseoGeneratedIntegrationExtension,
+  killForkPaneForAgent,
   launchForkTui,
   parseTmuxPanes,
   selectForkTuiBin,
@@ -112,6 +113,31 @@ test("selectForkTuiBin preserves the source session trust mode", () => {
     () => selectForkTuiBin({ tuiKind: "unsafe" }, { supervised: "/bin/pi" }),
     /no unsafe Pi TUI launcher/,
   );
+});
+
+test("killForkPaneForAgent validates fork ownership and the live Pi marker", () => {
+  const calls: string[][] = [];
+  const spawnSync = (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("display-message")) return { status: 0, stdout: "work\t@2\t%9\t456\n", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  assert.equal(killForkPaneForAgent("agent-1", {
+    spawnSync,
+    runtimeRecord: {
+      agentId: "agent-1",
+      forkCreated: true,
+      sessionFile: "/sessions/fork.jsonl",
+      tmuxPane: "%9",
+      pid: 456,
+      tuiKind: "unsafe",
+    },
+  }), true);
+  assert.equal(calls.some((args) => args.includes("kill-pane") && args.includes("%9")), true);
+  assert.equal(killForkPaneForAgent("agent-1", {
+    spawnSync,
+    runtimeRecord: { agentId: "agent-1", forkCreated: false, tmuxPane: "%9" },
+  }), false);
 });
 
 test("launchForkTui maps same workspaces to a split in the source window", () => {

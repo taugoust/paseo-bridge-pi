@@ -22,25 +22,43 @@ export function pipePathForAgent(agentId) {
   return path.join(dir, `agent-${agentId}.sock`);
 }
 
-function readRuntimeRecord(sourceSessionFile) {
+function readRuntimeRecords() {
   const directory = path.join(os.homedir(), ".pi", "paseo-bridge", "runtimes");
   let files;
   try {
     files = fs.readdirSync(directory);
   } catch {
-    return null;
+    return [];
   }
-  const expected = path.resolve(sourceSessionFile);
+  const records = [];
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     try {
       const record = JSON.parse(fs.readFileSync(path.join(directory, file), "utf8"));
-      if (path.resolve(record.sessionFile) === expected && typeof record.tmuxPane === "string") return record;
+      if (record && typeof record === "object") records.push(record);
     } catch {
-      // Ignore incomplete and stale records.
+      // Ignore incomplete records.
     }
   }
-  return null;
+  return records;
+}
+
+function readRuntimeRecord(sourceSessionFile) {
+  const expected = path.resolve(sourceSessionFile);
+  return readRuntimeRecords().find(
+    (record) => typeof record.sessionFile === "string"
+      && path.resolve(record.sessionFile) === expected
+      && typeof record.tmuxPane === "string",
+  ) ?? null;
+}
+
+export function findForkRuntimeRecord(agentId) {
+  return readRuntimeRecords().find(
+    (record) => record.agentId === agentId
+      && record.forkCreated === true
+      && typeof record.sessionFile === "string"
+      && typeof record.tmuxPane === "string",
+  ) ?? null;
 }
 
 export function parseTmuxPanes(output) {
@@ -165,4 +183,18 @@ export function killTmuxPane(paneId, options = {}) {
   const run = options.spawnSync ?? spawnSync;
   const socketArgs = options.socketPath ? ["-S", options.socketPath] : [];
   run("tmux", [...socketArgs, "kill-pane", "-t", paneId], { encoding: "utf8", timeout: 5_000 });
+}
+
+export function killForkPaneForAgent(agentId, options = {}) {
+  const record = options.runtimeRecord ?? (options.findRuntimeRecord ?? findForkRuntimeRecord)(agentId);
+  if (!record || record.agentId !== agentId || record.forkCreated !== true) return false;
+  let pane;
+  try {
+    pane = findSourcePane(record.sessionFile, { ...options, runtimeRecord: record });
+  } catch {
+    return false;
+  }
+  if (pane.paneId !== record.tmuxPane) return false;
+  killTmuxPane(pane.paneId, { ...options, socketPath: pane.socketPath });
+  return true;
 }

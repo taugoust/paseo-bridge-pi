@@ -884,6 +884,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         cwd,
         pid: process.pid,
         tuiKind: process.env.PI_SUPERVISED === "1" ? "supervised" : "unsafe",
+        forkCreated: Boolean(process.env.PI_PASEO_EXISTING_AGENT_ID?.trim()),
         tmuxPane: process.env.TMUX_PANE?.trim() || markedTmuxPane,
         tmuxSocket: process.env.TMUX?.split(",", 1)[0]?.trim() || null,
       }, null, 2)}\n`, { mode: 0o600 });

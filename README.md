@@ -136,6 +136,7 @@ When a TUI launcher is configured, the provider shim recognizes the chat-history
 
 - **Fork in new tab** creates a pane in the source agent's tmux window because Paseo assigns both agents to the same workspace.
 - **Fork in new workspace** creates a window in the source agent's tmux session because Paseo assigns a different workspace.
+- **Closing the fork tab** archives the Paseo agent. The shim then kills only a pane whose fork ownership, agent ID, pane ID, and live Pi PID still match. Paseo daemon downtime or restart leaves the pane running and reconnectable.
 
 The fork is created when the draft is submitted, not when the Fork menu item is clicked. The bridge removes Paseo's text history from the forwarded prompt because the native Pi branch already contains that context. An attachment-only submission creates an idle fork; a submitted message starts the new branch with that message.
 

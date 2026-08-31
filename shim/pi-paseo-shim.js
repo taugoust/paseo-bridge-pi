@@ -10,7 +10,9 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { createForkedSession, resolveForkPlan } from "./fork-support.js";
+import { startForkArchiveMonitor } from "./fork-lifecycle.js";
 import {
+  findForkRuntimeRecord,
   findSourcePane,
   forkStartupTimeoutMs,
   killTmuxPane,
@@ -72,9 +74,12 @@ function sessionIdFromFile(sessionFile) {
   return /^[0-9a-f-]{16,}$/i.test(id) ? id : null;
 }
 
-function bridge(socket, sessionFile) {
+function bridge(socket, sessionFile, agentId = null) {
   socket.setNoDelay?.(true);
   let tombstone = false;
+  const stopArchiveMonitor = agentId && findForkRuntimeRecord(agentId)
+    ? startForkArchiveMonitor(agentId, { onKilled: () => process.exit(0) })
+    : () => {};
   process.stdin.pipe(socket);
   socket.pipe(process.stdout);
   process.stdin.on("end", () => {
@@ -87,6 +92,7 @@ function bridge(socket, sessionFile) {
   const enterTombstone = () => {
     if (tombstone) return;
     tombstone = true;
+    stopArchiveMonitor();
     const resumeRef = sessionIdFromFile(sessionFile) ?? sessionFile;
     const message = `The terminal pi session has ended. Resume it from the project directory with: pi --session ${resumeRef} - or use Fork in Paseo to continue from this conversation in a new session.`;
     process.stdin.unpipe(socket);
@@ -220,6 +226,7 @@ function forkAwarePassthrough() {
   let backend = child.stdin;
   let switched = false;
   let firstPromptSeen = false;
+  let stopArchiveMonitor = () => {};
   child.stdout.pipe(process.stdout);
   child.stderr.pipe(process.stderr);
   child.on("error", (error) => {
@@ -260,6 +267,7 @@ function forkAwarePassthrough() {
     }
 
     switched = true;
+    stopArchiveMonitor = startForkArchiveMonitor(targetAgentId, { onKilled: () => process.exit(0) });
     child.stdout.unpipe(process.stdout);
     child.kill("SIGTERM");
     backend = socket;
@@ -329,6 +337,7 @@ function forkAwarePassthrough() {
   process.stdin.resume();
 
   const shutdown = () => {
+    stopArchiveMonitor();
     if (!switched) child.kill("SIGTERM");
     process.exit(0);
   };
@@ -347,7 +356,7 @@ async function main() {
     for (const pipePath of [...new Set(candidatePaths)]) {
       const socket = await tryConnect(pipePath);
       if (socket) {
-        bridge(socket, sessionFile);
+        bridge(socket, sessionFile, assignedAgentId);
         return;
       }
       if (process.platform !== "win32") {
