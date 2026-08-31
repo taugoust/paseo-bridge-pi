@@ -132,7 +132,7 @@ for development only — the supported install is the pi package flow above.
 
 ## Paseo forks in tmux
 
-When a TUI launcher is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response, and replaces the temporary RPC backend with an interactive TUI. The source runtime record selects the matching trust mode: a supervised `pi` source launches supervised `pi`, while a `pi-unsafe` source launches `pi-unsafe`.
+When a TUI launcher is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response, and replaces the temporary RPC backend with an interactive TUI. The source runtime record selects the matching trust mode: a supervised `pi` source launches supervised `pi`, while a `pi-unsafe` source launches `pi-unsafe`. During that conversion the shim removes Paseo's generated RPC-only integration extension; the package bridge remains loaded and prevents internal capture markers from appearing as TUI notifications.
 
 - **Fork in new tab** creates a pane in the source agent's tmux window because Paseo assigns both agents to the same workspace.
 - **Fork in new workspace** creates a window in the source agent's tmux session because Paseo assigns a different workspace.

@@ -86,12 +86,27 @@ export function selectForkTuiBin(sourcePane, launchers) {
   return tuiBin;
 }
 
+export function isPaseoGeneratedIntegrationExtension(extensionPath) {
+  return /(?:^|[\\/])paseo-pi-extension-[^\\/]+[\\/]paseo-integration\.mjs$/.test(String(extensionPath));
+}
+
 export function buildTuiArgs(rpcArgs, sessionFile) {
   const result = [];
   for (let index = 0; index < rpcArgs.length; index += 1) {
     const arg = rpcArgs[index];
     if (arg === "--mode" || arg === "--session") {
       index += 1;
+      continue;
+    }
+    if (arg === "--extension") {
+      const extensionPath = rpcArgs[index + 1];
+      if (extensionPath !== undefined) index += 1;
+      if (isPaseoGeneratedIntegrationExtension(extensionPath)) continue;
+      result.push(arg);
+      if (extensionPath !== undefined) result.push(extensionPath);
+      continue;
+    }
+    if (arg.startsWith("--extension=") && isPaseoGeneratedIntegrationExtension(arg.slice("--extension=".length))) {
       continue;
     }
     if (arg.startsWith("--mode=") || arg.startsWith("--session=") || arg === "--no-session") continue;

@@ -5,6 +5,7 @@ import {
   buildTuiShellCommand,
   findSourcePane,
   forkStartupTimeoutMs,
+  isPaseoGeneratedIntegrationExtension,
   launchForkTui,
   parseTmuxPanes,
   selectForkTuiBin,
@@ -18,11 +19,20 @@ test("forkStartupTimeoutMs allows slow supervised startup but remains bounded", 
   assert.throws(() => forkStartupTimeoutMs("not-a-number"), /between 1000 and 600000/);
 });
 
-test("buildTuiArgs replaces RPC mode and session flags with the fork", () => {
+test("buildTuiArgs replaces RPC state and removes only Paseo's generated integration", () => {
+  assert.equal(
+    isPaseoGeneratedIntegrationExtension("/tmp/paseo-pi-extension-zj87Qg/paseo-integration.mjs"),
+    true,
+  );
+  assert.equal(isPaseoGeneratedIntegrationExtension("/tmp/custom/paseo-integration.mjs"), false);
   assert.deepEqual(
     buildTuiArgs([
       "--mode", "rpc", "--model", "openai/gpt", "--thinking=high",
-      "--session=/old.jsonl", "--extension", "/tmp/paseo.ts", "--no-session",
+      "--session=/old.jsonl",
+      "--extension", "/tmp/paseo-pi-extension-zj87Qg/paseo-integration.mjs",
+      "--extension", "/tmp/paseo.ts",
+      "--extension=/tmp/paseo-pi-extension-other/paseo-integration.mjs",
+      "--no-session",
     ], "/new.jsonl"),
     ["--model", "openai/gpt", "--thinking=high", "--extension", "/tmp/paseo.ts", "--session", "/new.jsonl"],
   );
