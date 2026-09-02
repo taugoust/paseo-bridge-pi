@@ -142,10 +142,77 @@ test("drops cumulative child transcripts and bounds projected timeline details",
   assert.ok(Buffer.byteLength(JSON.stringify(update), "utf8") < 24 * 1024);
 });
 
-test("leaves non-subagent and draft disposition events unchanged", () => {
+test("preserves explicit background starts and their opaque job handles", () => {
+  const projection = new SubagentTaskProjection();
+  const start = {
+    type: "tool_execution_start",
+    toolCallId: "background",
+    toolName: "subagent",
+    args: { background: true, tasks: [{ task: "one" }, { task: "two" }] },
+  };
+  const end = {
+    type: "tool_execution_end",
+    toolCallId: "background",
+    toolName: "subagent",
+    result: {
+      content: [{ type: "text", text: "subagent-job-0123456789abcdef01234567 running" }],
+      details: {
+        background_subagent: true,
+        operation: "start",
+        job_id: "subagent-job-0123456789abcdef01234567",
+        status: "running",
+        failed: false,
+      },
+    },
+    isError: false,
+  };
+  assert.deepEqual(projection.project(start), [start]);
+  assert.deepEqual(projection.project(end), [end]);
+  assert.deepEqual(projectSubagentMessages([
+    { role: "assistant", content: [{ type: "toolCall", id: "background", name: "subagent", arguments: start.args }] },
+    { role: "toolResult", toolCallId: "background", toolName: "subagent", ...end.result, isError: false },
+  ]), [
+    { role: "assistant", content: [{ type: "toolCall", id: "background", name: "subagent", arguments: start.args }] },
+    { role: "toolResult", toolCallId: "background", toolName: "subagent", ...end.result, isError: false },
+  ]);
+});
+
+test("reports a foreground handoff as running instead of fabricating a launch failure", () => {
+  const projection = new SubagentTaskProjection();
+  projection.project({
+    type: "tool_execution_start",
+    toolCallId: "handoff",
+    toolName: "subagent",
+    args: { task: "inspect" },
+  });
+  const [end] = projection.project({
+    type: "tool_execution_end",
+    toolCallId: "handoff",
+    toolName: "subagent",
+    result: {
+      content: [{ type: "text", text: "subagent-job-0123456789abcdef01234567 running" }],
+      details: {
+        background_subagent: true,
+        operation: "start",
+        job_id: "subagent-job-0123456789abcdef01234567",
+        status: "running",
+        failed: false,
+      },
+    },
+    isError: false,
+  });
+  assert.equal(end.isError, false);
+  assert.equal(end.result.details.status, "running");
+  assert.equal(end.result.details.task, "inspect");
+  assert.doesNotMatch(end.result.content[0].text, /did not start/);
+});
+
+test("leaves non-subagent, lifecycle, and draft disposition events unchanged", () => {
   const projection = new SubagentTaskProjection();
   const bash = { type: "tool_execution_start", toolCallId: "b", toolName: "bash", args: { command: "true" } };
+  const lifecycle = { type: "tool_execution_start", toolCallId: "s", toolName: "subagent", args: { operation: "status", job_id: "subagent-job-0123456789abcdef01234567" } };
   const draft = { type: "tool_execution_start", toolCallId: "d", toolName: "subagent", args: { action: "review" } };
   assert.deepEqual(projection.project(bash), [bash]);
+  assert.deepEqual(projection.project(lifecycle), [lifecycle]);
   assert.deepEqual(projection.project(draft), [draft]);
 });

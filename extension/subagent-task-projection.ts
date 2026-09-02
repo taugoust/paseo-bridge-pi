@@ -1,4 +1,5 @@
 type RecordValue = Record<string, any>;
+type BackgroundSubagentResult = RecordValue & { details: RecordValue };
 
 type ChildSpec = {
   index: number;
@@ -27,7 +28,7 @@ function text(value: unknown): string | undefined {
 }
 
 function childSpecs(args: unknown): ChildSpec[] {
-  if (!isRecord(args) || args.action !== undefined) return [];
+  if (!isRecord(args) || args.action !== undefined || args.operation !== undefined || args.background === true) return [];
   if (text(args.task)) {
     return [{ index: 0, task: text(args.task)!, agent: text(args.model) ?? text(args.agent) }];
   }
@@ -59,6 +60,20 @@ function resultChildren(result: unknown): RecordValue[] {
   const details = isRecord(result.details) ? result.details : undefined;
   const children = details?.results ?? result.results;
   return Array.isArray(children) ? children.filter(isRecord) : [];
+}
+
+function isBackgroundSubagentResult(result: unknown): result is BackgroundSubagentResult {
+  return isRecord(result) && isRecord(result.details) && result.details.background_subagent === true;
+}
+
+function projectedBackgroundResult(result: RecordValue, spec: ChildSpec): RecordValue {
+  return {
+    ...result,
+    details: {
+      ...result.details,
+      task: spec.task,
+    },
+  };
 }
 
 const MAX_PROJECTED_LOG_BYTES = 16 * 1024;
@@ -221,6 +236,16 @@ export class SubagentTaskProjection {
     const parent = typeof event.toolCallId === "string" ? this.active.get(event.toolCallId) : undefined;
     if (!parent) return [event];
     const result = event.type === "tool_execution_update" ? event.partialResult : event.result;
+    if (event.type === "tool_execution_end" && isBackgroundSubagentResult(result)) {
+      this.active.delete(parent.parentId);
+      return parent.specs.map((spec) => ({
+        type: "tool_execution_end",
+        toolCallId: childId(parent.parentId, spec.index),
+        toolName: "subagent",
+        result: projectedBackgroundResult(result, spec),
+        isError: event.isError === true || result.details.failed === true,
+      }));
+    }
     const children = resultChildren(result);
     const projected = parent.specs.flatMap<RecordValue>((spec): RecordValue[] => {
       const observedChild = childForSpec(children, spec);
@@ -303,6 +328,16 @@ export function projectSubagentMessages(messages: unknown[]): unknown[] {
       const projection = calls.get(message.toolCallId);
       if (!projection) {
         output.push(message);
+        continue;
+      }
+      if (isBackgroundSubagentResult(message)) {
+        output.push(
+          ...projection.specs.map((spec) => ({
+            ...projectedBackgroundResult(message, spec),
+            toolCallId: childId(projection.parentId, spec.index),
+            isError: message.isError === true || message.details.failed === true,
+          })),
+        );
         continue;
       }
       const children = resultChildren(message);
