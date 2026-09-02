@@ -22,6 +22,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
 import { coordinateMirroredSelect } from "./mirrored-select.js";
+import { createProviderReconnectLoop } from "./provider-reconnect.js";
+import { unknownRpcCommandError } from "./rpc-compat.js";
 import { normalizePiEventForPaseo } from "./tool-result-normalization.js";
 import { SubagentTaskProjection, projectSubagentMessages } from "./subagent-task-projection.js";
 
@@ -274,6 +276,26 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   const pendingRemoteUiRequests = new Map<string, PendingRemoteUiRequest>();
   let markedTmuxPane: string | null = null;
   const subagentTaskProjection = new SubagentTaskProjection();
+  const providerReconnect = createProviderReconnectLoop({
+    shouldReconnect: () => Boolean(currentSessionFile && currentAgentId && !remoteUiConnected()),
+    reload: reloadCurrentPaseoProvider,
+    onError: (error) => debugLog(`paseo provider reattach failed: ${String(error)}`),
+  });
+
+  function reloadCurrentPaseoProvider(): Promise<void> {
+    const agentId = currentAgentId;
+    const cli = resolvePaseoCli();
+    if (!agentId) return Promise.reject(new Error("Paseo agent ID is unavailable"));
+    if (!cli) return Promise.reject(new Error("paseo CLI is unavailable"));
+    const hostArgs = process.env.PASEO_HOST ? ["--host", process.env.PASEO_HOST] : [];
+    return new Promise((resolve, reject) => {
+      runPaseoCli(cli, ["agent", "reload", agentId, "--json", ...hostArgs], (code, output) => {
+        debugLog(`paseo provider reattach reload exited ${code}: ${output.slice(0, 200)}`);
+        if (code === 0) resolve();
+        else reject(new Error(output.trim() || `paseo agent reload exited ${String(code)}`));
+      });
+    });
+  }
 
   function markTmuxPane(active: boolean): void {
     const pane = process.env.TMUX_PANE?.trim();
@@ -734,7 +756,9 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           return;
         }
         default:
-          send(failure(id, type ?? "unknown", `Unsupported command for terminal-attached session: ${type}`));
+          // Paseo uses Pi's native error text to detect optional RPCs. In
+          // particular, 0.7.2 falls back from clear_queue before aborting.
+          send(failure(id, type ?? "unknown", unknownRpcCommandError(type)));
       }
     } catch (err) {
       debugLog(`command ${type} failed: ${String(err)}`);
@@ -743,6 +767,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function attachClient(socket: net.Socket): void {
+    providerReconnect.connected();
     client = socket;
     socket.setNoDelay?.(true);
     let buffer = "";
@@ -768,6 +793,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       if (client === socket) {
         client = null;
         cancelPendingRemoteUiRequests();
+        providerReconnect.trigger();
       }
       debugLog("client disconnected");
     };
@@ -784,6 +810,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function stopServer(): void {
+    providerReconnect.stop();
     cancelPendingRemoteUiRequests();
     if (client) {
       try {

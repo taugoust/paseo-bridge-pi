@@ -53,7 +53,13 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 - Closing the TUI mid-conversation leaves a helpful error in Paseo with the
   exact `pi --session <id>` command to resume, and Paseo's Fork keeps working.
 - Reopening a session in a terminal reattaches the existing Paseo agent
-  instead of creating a duplicate.
+  instead of creating a duplicate. If the Paseo daemon restarts while the TUI
+  remains alive, the extension reloads that agent with bounded backoff until
+  its provider reconnects.
+- Paseo cancellation remains compatible with terminal-attached sessions even
+  though Pi's extension API cannot clear queued messages directly: the bridge
+  returns Pi's native `Unknown command: clear_queue` response so Paseo 0.7.2's
+  documented fallback proceeds to `abort`.
 
 ## How it works
 
