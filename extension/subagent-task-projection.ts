@@ -85,15 +85,40 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return `${bytes.subarray(0, maxBytes).toString("utf8")}\n\n… truncated`;
 }
 
+function taskOutcome(child: RecordValue): RecordValue | undefined {
+  const value = isRecord(child.task_outcome) ? child.task_outcome : undefined;
+  if (!value || !["delivered","partial","blocked","checkpointed","unreported"].includes(value.state)) return undefined;
+  return {state:value.state==='delivered'&&value.reported!==true?'unreported':value.state,reported:value.reported===true,summary:truncateUtf8(text(value.summary)??"",1024),...(text(value.next_action)?{next_action:truncateUtf8(value.next_action,1024)}:{})};
+}
+
+function outcomeTitle(outcome: RecordValue): string {
+  return ({delivered:"Reported delivered",partial:"Needs continuation",blocked:"Blocked",checkpointed:"Checkpoint saved",unreported:"Outcome not reported"} as Record<string,string>)[outcome.state];
+}
+
+function lastVisibleAssistantText(messages: unknown): string | undefined {
+  if (!Array.isArray(messages)) return undefined;
+  for(let index=messages.length-1;index>=Math.max(0,messages.length-20);index--) {
+    const message=messages[index];
+    if(message?.role!=="assistant"||!Array.isArray(message.content))continue;
+    const value=message.content.filter((part:any)=>part?.type==="text"&&typeof part.text==="string").map((part:any)=>part.text).join("");
+    if(value.trim())return truncateUtf8(value,MAX_PROJECTED_LOG_BYTES);
+  }
+  return undefined;
+}
+
 function childLog(child: RecordValue, fallback?: unknown): string {
   const terminal = isRecord(child.terminal) ? child.terminal : undefined;
   const toolCall = isRecord(child.lastToolCall) ? child.lastToolCall : isRecord(child.activeTool) ? child.activeTool : undefined;
+  const outcome=taskOutcome(child);
+  const terminalResponse=finiteNumber(child.exitCode ?? child.exit_code) !== undefined && (child.exitCode ?? child.exit_code) !== -1;
+  const showTool = toolCall && !(terminalResponse && toolCall.name === 'task_outcome');
   const parts = [
-    text(child.lastAssistantText),
+    outcome ? `${outcomeTitle(outcome)}${child.attempt ? ` · attempt ${child.attempt}` : ""}\n${outcome.summary}${outcome.next_action ? `\nNext: ${outcome.next_action}` : ""}` : undefined,
+    text(child.lastAssistantText) ?? lastVisibleAssistantText(child.messages),
     text(child.final),
     text(child.outputPrefix),
-    toolCall ? `Running ${text(toolCall.name) ?? "tool"}${isRecord(toolCall.args) ? `: ${JSON.stringify(toolCall.args)}` : ""}` : undefined,
-    text(child.lastToolResult),
+    showTool ? `${terminalResponse ? "Last tool:" : "Running"} ${text(toolCall.name) ?? "tool"}${isRecord(toolCall.args) ? `: ${JSON.stringify(toolCall.args)}` : ""}` : undefined,
+    showTool || !toolCall ? text(child.lastToolResult) : undefined,
     text(child.errorMessage) ?? text(child.error) ?? text(terminal?.message),
   ].filter((part): part is string => Boolean(part));
   if (parts.length) return truncateUtf8([...new Set(parts)].join("\n\n"), MAX_PROJECTED_LOG_BYTES);
@@ -153,6 +178,9 @@ function compactTerminal(value: unknown): RecordValue | undefined {
 
 function compactChildDetails(child: RecordValue): RecordValue {
   const details: RecordValue = {
+    ...(taskOutcome(child) ? {task_outcome:taskOutcome(child)} : {}),
+    ...(/^subagent-task-[0-9a-f]{24}$/.test(child.task_id ?? "") ? {task_id:child.task_id} : {}),
+    ...(Number.isSafeInteger(child.attempt) && child.attempt > 0 ? {attempt:child.attempt} : {}),
     ...(text(child.label) ? { label: truncateUtf8(text(child.label)!, 256) } : {}),
     ...(text(child.task) ? { task: truncateUtf8(text(child.task)!, 1024) } : {}),
     ...(text(child.model) ? { model: truncateUtf8(text(child.model)!, 256) } : {}),
@@ -183,8 +211,9 @@ function projectedResult(child: RecordValue, fallback?: unknown): RecordValue {
 }
 
 function childForSpec(children: RecordValue[], spec: ChildSpec): RecordValue | undefined {
-  const byStep = children.find((child) => Number(child.step) === spec.index + 1);
-  return byStep ?? children[spec.index];
+  const byOrdinal = children.find((child) => Number(child.child ?? child.step) === spec.index + 1);
+  if (byOrdinal) return byOrdinal;
+  return children.some(child=>child.child !== undefined || child.step !== undefined) ? undefined : children[spec.index];
 }
 
 const PROJECTED_TEXT_UPDATE_INTERVAL_MS = 500;
@@ -208,6 +237,7 @@ function structuralFingerprint(child: RecordValue): string {
     activeTool: activeTool
       ? { name: text(activeTool.name), args: isRecord(activeTool.args) ? activeTool.args : undefined }
       : undefined,
+    task_outcome: taskOutcome(child),
     completedToolCount: Array.isArray(child.completedTools) ? child.completedTools.length : undefined,
     turns: isRecord(child.usage) ? finiteNumber(child.usage.turns) : undefined,
   });

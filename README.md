@@ -46,9 +46,16 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 - Extension slash commands, skill commands, and prompt templates sent from
   Paseo are dispatched by pi instead of becoming literal user prompts.
 - Model and effort changes sync both ways.
-- Pi `subagent` fan-outs appear as one structured Paseo task card per child.
-  Each card keeps a stable identity across live updates and history replay,
-  shows that child's task/model and current output, and resolves independently.
+- Foreground Pi `subagent` fan-outs appear as one structured Paseo task card per
+  child. Each card keeps a stable identity across live updates/history replay.
+  Task ID, attempt, and delivery outcome metadata are preserved separately from
+  execution success; partial reports say **Needs continuation**, not delivered.
+  With the matching Paseo server mapper patch, these labels appear in card titles
+  and job/watch operations render readable text instead of nested JSON.
+- With the task-enabled Pi harness installed, `/tasks`, `/watches`, and
+  `/background-jobs` expose human controls through the existing mirrored choice
+  UI. Background launches retain their real group/job handles; the task dashboard
+  groups attempts, builds and alerts without fabricating separate provider sessions.
 - After your first message, a session title is generated with the current
   model and applied to the Paseo agent, the workspace (prefixed `[TUI]`), and
   pi's session list.
