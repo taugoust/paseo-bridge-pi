@@ -10,7 +10,6 @@
 //
 // It also registers the session with the Paseo daemon (`paseo import`) on
 // session start, which causes Paseo to spawn the shim and attach.
-import * as net from "node:net";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -18,7 +17,9 @@ import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { completeSimple } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { BridgeTransport, retainBridgeForReload, takeBridgeAfterReload, discardRetainedBridge } from "./bridge-transport.js";
+import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
 import { coordinateMirroredSelect } from "./mirrored-select.js";
@@ -258,10 +259,12 @@ function runPaseoCli(cli: string, args: string[], onDone: (code: number | null, 
 export default function piPaseoBridge(pi: ExtensionAPI) {
   if (["0", "off", "false"].includes((process.env.PI_PASEO_BRIDGE ?? "").toLowerCase())) return;
 
-  let server: net.Server | null = null;
-  let client: net.Socket | null = null;
+  let transport: BridgeTransport | null = null;
   let currentSessionFile: string | null = null;
-  let currentPipePath: string | null = null;
+  let reloadRequested = false;
+  let reloadExecuting = false;
+  let commandsInFlight = 0;
+  let lifecycleClosed = false;
   let latestCtx: ExtensionContext | null = null;
   let isCompacting = false;
   let autoCompactionEnabled = true;
@@ -312,7 +315,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function remoteUiConnected(): boolean {
-    return Boolean(client && !client.destroyed);
+    return transport?.connected ?? false;
   }
 
   function finishRemoteUiRequest(id: string, value: string | undefined): void {
@@ -551,12 +554,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function send(obj: unknown): void {
-    if (!client || client.destroyed) return;
-    try {
-      client.write(`${JSON.stringify(obj)}\n`);
-    } catch (err) {
-      debugLog(`send failed: ${String(err)}`);
-    }
+    transport?.send(obj);
   }
 
   function notifyTui(message: string): void {
@@ -657,6 +655,21 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
 
   async function handlePrompt(cmd: any): Promise<void> {
     const message: string = typeof cmd.message === "string" ? cmd.message : "";
+    if (isRuntimeReloadCommand(message)) {
+      validateReloadPrompt(message, cmd.images);
+      requireIdleReload(latestCtx, { reloading: reloadRequested, compacting: isCompacting,
+        pendingUi: pendingRemoteUiRequests.size > 0, pendingRpc: commandsInFlight > 1 });
+      reloadRequested = true;
+      // Acknowledge acceptance before teardown. Completion is emitted by the
+      // replacement session_start handler, never through the stale Pi API.
+      send(success(cmd.id, "prompt", { agentInvoked: false, reloadAccepted: true }));
+      try { pi.sendUserMessage("/paseo-reload", { expandPromptTemplates: true }); }
+      catch (error) {
+        reloadRequested = false;
+        notifyEvent(`Pi runtime reload failed: ${String(error).slice(0, 2000)}`);
+      }
+      return;
+    }
     if (message.startsWith(`/${CAPTURE_COMMAND}`)) {
       const payload = decodeCommandPayload(message.slice(CAPTURE_COMMAND.length + 1));
       emitEntryCapture(latestCtx, "command", typeof payload?.requestId === "string" ? payload.requestId : undefined);
@@ -687,7 +700,12 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   async function handleCommand(cmd: any): Promise<void> {
     const id = cmd.id;
     const type: string = cmd.type;
+    commandsInFlight += 1;
     try {
+      if (reloadRequested) {
+        send(failure(id, type, "Pi runtime reload is in progress; retry after it completes."));
+        return;
+      }
       switch (type) {
         case "prompt":
           await handlePrompt(cmd);
@@ -763,79 +781,34 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     } catch (err) {
       debugLog(`command ${type} failed: ${String(err)}`);
       send(failure(id, type ?? "unknown", err instanceof Error ? err.message : String(err)));
+    } finally {
+      commandsInFlight -= 1;
     }
   }
 
-  function attachClient(socket: net.Socket): void {
-    providerReconnect.connected();
-    client = socket;
-    socket.setNoDelay?.(true);
-    let buffer = "";
-    socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      for (;;) {
-        const newline = buffer.indexOf("\n");
-        if (newline === -1) break;
-        const line = buffer.slice(0, newline).replace(/\r$/, "");
-        buffer = buffer.slice(newline + 1);
-        if (!line.trim()) continue;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          debugLog(`ignoring non-JSON line from client: ${line.slice(0, 200)}`);
-          continue;
-        }
-        void handleCommand(parsed);
-      }
-    });
-    const detach = () => {
-      if (client === socket) {
-        client = null;
+  function bindTransport(): void {
+    transport?.bind({
+      command: handleCommand,
+      attached() {
+        providerReconnect.connected();
+        debugLog("client connected");
+        notifyTui("Paseo attached to this session");
+        emitEntryCapture(latestCtx, "session_start");
+      },
+      detached() {
         cancelPendingRemoteUiRequests();
         providerReconnect.trigger();
-      }
-      debugLog("client disconnected");
-    };
-    socket.on("close", detach);
-    socket.on("error", (err) => {
-      debugLog(`client socket error: ${String(err)}`);
-      detach();
+        debugLog("client disconnected");
+      },
+      error: (error) => debugLog(`bridge transport error: ${String(error)}`),
     });
-    debugLog("client connected");
-    notifyTui("Paseo attached to this session");
-    // Prime Paseo's user-entry capture, mirroring what its injected
-    // extension does on session_start.
-    emitEntryCapture(latestCtx, "session_start");
   }
 
   function stopServer(): void {
     providerReconnect.stop();
     cancelPendingRemoteUiRequests();
-    if (client) {
-      try {
-        client.destroy();
-      } catch {
-        // already gone
-      }
-      client = null;
-    }
-    if (server) {
-      try {
-        server.close();
-      } catch {
-        // already closed
-      }
-      server = null;
-    }
-    if (currentPipePath && process.platform !== "win32") {
-      try {
-        fs.unlinkSync(currentPipePath);
-      } catch {
-        // absent - fine
-      }
-    }
-    currentPipePath = null;
+    transport?.close();
+    transport = null;
     currentSessionFile = null;
     currentAgentId = null;
     remoteAppliedModel = null;
@@ -844,51 +817,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function startServer(sessionFile: string): void {
-    const pipePath = pipePathForSession(sessionFile);
-    if (process.platform !== "win32") {
-      fs.mkdirSync(path.dirname(pipePath), { recursive: true, mode: 0o700 });
-      try {
-        fs.unlinkSync(pipePath);
-      } catch {
-        // no stale socket
-      }
-    }
-    const srv = net.createServer((socket) => {
-      if (client) {
-        try {
-          socket.write(
-            `${JSON.stringify({
-              type: "response",
-              id: null,
-              command: "connect",
-              success: false,
-              error: "pi-paseo-bridge: another controller is already attached to this session",
-            })}\n`,
-          );
-        } catch {
-          // best effort
-        }
-        socket.destroy();
-        return;
-      }
-      attachClient(socket);
-    });
-    srv.on("error", (err) => {
-      debugLog(`server error: ${String(err)}`);
-    });
-    srv.listen(pipePath, () => {
-      if (process.platform !== "win32") {
-        try {
-          fs.chmodSync(pipePath, 0o600);
-        } catch {
-          // best effort
-        }
-      }
-      debugLog(`listening on ${pipePath} for ${sessionFile}`);
-    });
-    server = srv;
-    currentPipePath = pipePath;
+    transport = new BridgeTransport(sessionFile, pipePathForSession(sessionFile));
     currentSessionFile = sessionFile;
+    bindTransport();
+    transport.start();
   }
 
   const agentMapFile = path.join(os.homedir(), ".pi", "paseo-bridge", "agents.json");
@@ -971,7 +903,8 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function registerWithPaseo(sessionFile: string, cwd: string): void {
-    if (importAttempted.has(sessionFile)) return;
+    if (importAttempted.has(sessionFile) || lifecycleClosed) return;
+    const isCurrent = () => !lifecycleClosed && currentSessionFile === sessionFile;
     importAttempted.add(sessionFile);
     const assignedAgentId = process.env.PI_PASEO_EXISTING_AGENT_ID?.trim();
     if (assignedAgentId) {
@@ -989,6 +922,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     const runImport = () => {
       const args = ["import", "--provider", "pi", sessionFile, "--cwd", cwd, "--json", ...hostArgs];
       runPaseoCli(cli, args, (code, output) => {
+        if (!isCurrent()) return;
         debugLog(`paseo import exited ${code}: ${output.slice(0, 500)}`);
         if (code !== 0) return;
         try {
@@ -1012,6 +946,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       return;
     }
     runPaseoCli(cli, ["inspect", knownAgentId, "--json", ...hostArgs], (code, output) => {
+      if (!isCurrent()) return;
       let exists = false;
       try {
         if (code === 0) {
@@ -1029,6 +964,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       // The daemon's provider session for this agent died with the previous
       // TUI process; reload restarts it so it reattaches to the new pipe.
       runPaseoCli(cli, ["agent", "reload", knownAgentId, "--json", ...hostArgs], (reloadCode, reloadOutput) => {
+        if (!isCurrent()) return;
         debugLog(`paseo agent reload exited ${reloadCode}: ${reloadOutput.slice(0, 200)}`);
         if (reloadCode === 0) {
           adoptAgent(knownAgentId, true);
@@ -1052,23 +988,56 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     return "Connecting session to Paseo...";
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     latestCtx = ctx;
+    const retained = event.reason === "reload"
+      ? takeBridgeAfterReload(ctx.sessionManager.getSessionFile())
+      : (discardRetainedBridge(), undefined);
     try {
       const force = ["1", "true", "on"].includes((process.env.PI_PASEO_BRIDGE_FORCE ?? "").toLowerCase());
-      if (ctx.mode !== "tui" && !force) return;
-      if (!isAutoEnabled()) return;
-      connectSession(ctx);
+      if (ctx.mode !== "tui" && !force) {
+        retained?.transport.close();
+        if (event.reason === "reload" && ctx.hasUI) ctx.ui.notify("Pi runtime reloaded.", "info");
+        return;
+      }
+      if (retained) {
+        transport = retained.transport;
+        currentSessionFile = transport.sessionFile;
+        currentAgentId = retained.agentId;
+        titleAttempted = retained.titleAttempted;
+        bindTransport();
+        writeRuntimeRecord(currentSessionFile, ctx.cwd);
+        // Keep the existing provider and socket. Restarting it here would turn
+        // a harmless extension reload into a Paseo process_exit/tombstone.
+        if (currentAgentId) {
+          importAttempted.add(currentSessionFile);
+          if (!remoteUiConnected()) providerReconnect.trigger();
+        } else registerWithPaseo(currentSessionFile, ctx.cwd);
+      } else {
+        if (!isAutoEnabled()) return;
+        connectSession(ctx);
+      }
       markTmuxPane(true);
+      if (event.reason === "reload") notifyEvent("Pi runtime reloaded. Background jobs were not cancelled.");
     } catch (err) {
+      retained?.transport.close();
       debugLog(`session_start failed: ${String(err)}`);
     }
   });
 
-  pi.on("session_shutdown", async () => {
-    if (currentSessionFile) removeRuntimeRecord(currentSessionFile);
-    markTmuxPane(false);
-    stopServer();
+  pi.on("session_shutdown", async (event) => {
+    lifecycleClosed = true;
+    if (event.reason === "reload" && transport) {
+      providerReconnect.stop();
+      cancelPendingRemoteUiRequests();
+      retainBridgeForReload(transport, currentAgentId, titleAttempted);
+      transport = null;
+    } else {
+      discardRetainedBridge();
+      if (currentSessionFile) removeRuntimeRecord(currentSessionFile);
+      markTmuxPane(false);
+      stopServer();
+    }
     if ((globalThis as Record<string, unknown>)[REMOTE_UI_BRIDGE_KEY] === remoteUiBridge) {
       delete (globalThis as Record<string, unknown>)[REMOTE_UI_BRIDGE_KEY];
     }
@@ -1129,6 +1098,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       const model = ctx.model;
       if (!model) return;
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (lifecycleClosed) return;
       if (auth.ok === false) {
         debugLog(`title generation: no auth: ${auth.error}`);
         return;
@@ -1144,6 +1114,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         },
         { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens: 1024, reasoning: "off" },
       );
+      if (lifecycleClosed) return;
       let title = readTextContent(response.content).trim().split("\n")[0].trim().replace(/^["']+|["']+$/g, "");
       if (!title) {
         debugLog(`title generation: empty response (stopReason=${(response as any).stopReason})`);
@@ -1206,6 +1177,33 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     pushAgentConfigToPaseo("thinking", event.level ?? null);
   });
 
+  const reloadRuntime = async (args: string, ctx: ExtensionCommandContext) => {
+    validateReloadPrompt(`/paseo-reload ${args}`);
+    requireIdleReload(ctx, { reloading: reloadExecuting, compacting: isCompacting,
+      pendingUi: pendingRemoteUiRequests.size > 0, pendingRpc: commandsInFlight > (reloadRequested ? 1 : 0) });
+    reloadRequested = true;
+    reloadExecuting = true;
+    const connection = transport;
+    notifyEvent("Reloading Pi runtime; the Pi process and background jobs will keep running.");
+    try {
+      await ctx.reload();
+      return; // The old pi/ctx are invalid after reload.
+    } catch (error) {
+      reloadRequested = false;
+      reloadExecuting = false;
+      // Only the independently owned transport is safe to use after teardown.
+      connection?.send({ type: "extension_ui_request", id: crypto.randomUUID(), method: "notify",
+        message: `Pi runtime reload failed: ${String(error).slice(0, 2000)}`, notifyType: "error" });
+      throw error;
+    }
+  };
+  for (const name of ["reload", "paseo-reload"]) {
+    pi.registerCommand(name, {
+      description: "Reload Pi extensions and resources while idle, without restarting Pi or cancelling background jobs",
+      handler: reloadRuntime,
+    });
+  }
+
   pi.registerCommand("paseo-bridge", {
     description: "Manage the Paseo bridge: install | uninstall | auto [on|off] | connect | disconnect | status",
     handler: async (args, ctx) => {
@@ -1237,7 +1235,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
             ctx.ui.notify(connectSession(ctx), "info");
             return;
           case "disconnect":
-            if (!server) {
+            if (!transport) {
               ctx.ui.notify("Bridge is not connected.", "info");
               return;
             }
@@ -1256,7 +1254,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
             const lines = [
               `shim: ${shimInstalled ? "installed" : "not installed (run /paseo-bridge install)"}`,
               `auto-connect: ${isAutoEnabled() ? "on" : "off"}`,
-              `session: ${server ? (currentAgentId ? `bridged as Paseo agent ${currentAgentId}` : "bridged (not yet imported)") : "not bridged"}`,
+              `session: ${transport ? (currentAgentId ? `bridged as Paseo agent ${currentAgentId}` : "bridged (not yet imported)") : "not bridged"}`,
             ];
             ctx.ui.notify(`Paseo bridge status\n${lines.join("\n")}`, "info");
             return;

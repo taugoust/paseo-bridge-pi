@@ -36,6 +36,8 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 | `/paseo-bridge connect` | Connect the current session to Paseo now. |
 | `/paseo-bridge disconnect` | Stop bridging the current session. |
 | `/paseo-bridge status` | Show shim / auto-connect / session state. |
+| `/reload` | From Paseo, reload Pi extensions and resources while the parent is idle. |
+| `/paseo-reload` | Explicit extension-command alias for the same idle-only reload (also works in native RPC sessions when this extension is loaded). |
 
 ## What you get
 
@@ -60,6 +62,29 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
   though Pi's extension API cannot clear queued messages directly: the bridge
   returns Pi's native `Unknown command: clear_queue` response so Paseo 0.7.2's
   documented fallback proceeds to `abort`.
+
+## Reloading Pi from Paseo
+
+Send `/reload` or `/paseo-reload` without arguments or attachments. The bridge
+rejects reload while the parent is running, compacting, has queued messages, or
+has a pending UI/control request. It does not abort the parent or cancel its
+background work to make reload possible.
+
+For terminal-attached sessions, the prompt response acknowledges acceptance;
+`Pi runtime reloaded` confirms that the replacement extension has started. The
+existing RPC socket is retained and rebound to the new extension context, so the
+shim does not mistake reload for Pi exiting. Requests arriving during the reload
+gap receive an explicit retry error. If the controller disconnects independently,
+normal provider reconnection still applies. A retained bridge that is not adopted
+within 90 seconds is closed rather than left suspended indefinitely.
+
+This reloads extensions, skills, prompts, themes, and context files—not the Pi
+executable or the Paseo daemon. Existing child processes retain the code and
+settings they launched with; extensions supporting same-session hot reload keep
+their background jobs. This bridge version must already be loaded before the
+remote command is available, so the first upgrade still needs a terminal reload
+or a fresh Pi session. No terminal keystrokes or model prompts are used to emulate
+built-in commands.
 
 ## How it works
 
@@ -150,9 +175,10 @@ Source and boundary resolution is deliberately fail-closed. The source title, cw
 
 ## Known limitations (v1)
 
-- Built-in interactive-only commands are not part of pi's RPC command list and
-  cannot be dispatched as prompts. Use Paseo's native controls for model and
-  thinking changes; extension commands such as `/slow-mode` do work.
+- Except for the explicit `/reload` support above, built-in interactive-only
+  commands are not part of pi's RPC command list and cannot be dispatched as
+  prompts. Use Paseo's native controls for model and thinking changes; extension
+  commands such as `/slow-mode` do work.
 - Extension UI dialogs (`ask_user` etc.) render in the TUI only; they are not
   forwarded to Paseo.
 - Timeline rewind from Paseo is rejected for terminal-attached sessions
@@ -169,6 +195,13 @@ Source and boundary resolution is deliberately fail-closed. The source title, cw
   two processes would both own the session file.
 
 ## Verification
+
+Run unit tests with `npm test` and type checking with `npm run typecheck` using
+the development tools supplied by your environment. Setting `TEST_PI_BIN` to an
+installed Pi executable also enables the real-process reload tests (no model
+calls or running user sessions are involved). They verify both native RPC and
+terminal-bridge dispatch, single acknowledgement, stable process/socket identity,
+and continued RPC operation after repeated reloads.
 
 - During a remote-driven turn, exactly one process (the TUI) has the session
   `.jsonl` open for writing.
