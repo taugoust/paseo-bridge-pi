@@ -253,6 +253,7 @@ export class SubagentTaskProjection {
 
   project(event: unknown): RecordValue[] {
     if (!isRecord(event) || !text(event.type)) return [event as RecordValue];
+    if ((event.type === 'message_start' || event.type === 'message_end') && event.message?.role === 'custom' && event.message.display === false) return [];
     if (event.type === "tool_execution_start") {
       if (event.toolName !== "subagent" || typeof event.toolCallId !== "string") return [event];
       const specs = childSpecs(event.args);
@@ -325,6 +326,7 @@ export function projectSubagentMessages(messages: unknown[]): unknown[] {
   const calls = new Map<string, Projection>();
   const output: unknown[] = [];
   for (const message of messages) {
+    if (isRecord(message) && message.role === 'custom' && message.display === false) continue;
     if (!isRecord(message)) {
       output.push(message);
       continue;
