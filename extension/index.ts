@@ -27,6 +27,7 @@ import { createProviderReconnectLoop } from "./provider-reconnect.js";
 import { unknownRpcCommandError } from "./rpc-compat.js";
 import { normalizePiEventForPaseo } from "./tool-result-normalization.js";
 import { SubagentTaskProjection, projectSubagentMessages } from "./subagent-task-projection.js";
+import { TurnVisibilityProjection } from "./turn-visibility.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
 type RemoteUiBridgeV1 = {
@@ -279,6 +280,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   const pendingRemoteUiRequests = new Map<string, PendingRemoteUiRequest>();
   let markedTmuxPane: string | null = null;
   const subagentTaskProjection = new SubagentTaskProjection();
+  const turnVisibility = new TurnVisibilityProjection();
   const providerReconnect = createProviderReconnectLoop({
     shouldReconnect: () => Boolean(currentSessionFile && currentAgentId && !remoteUiConnected()),
     reload: reloadCurrentPaseoProvider,
@@ -1053,12 +1055,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     "tool_execution_update",
     "tool_execution_end",
     "agent_end",
+    "agent_settled",
   ] as const;
   for (const eventName of forwardEvents) {
     (pi as any).on(eventName, async (event: unknown, ctx: ExtensionContext) => {
       latestCtx = ctx;
       const normalized = normalizePiEventForPaseo(event);
-      for (const projected of subagentTaskProjection.project(normalized)) send(projected);
+      for (const visible of turnVisibility.project(normalized as Record<string, any>)) {
+        for (const projected of subagentTaskProjection.project(visible)) send(projected);
+      }
     });
   }
 

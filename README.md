@@ -180,6 +180,21 @@ The fork is created when the draft is submitted, not when the Fork menu item is 
 
 Source and boundary resolution is deliberately fail-closed. The source title, cwd, and selected assistant text must resolve to exactly one live bridged session entry. Ambiguous or stale matches return an error rather than falling back to a potentially incorrect branch. Conversation state is forked, but both agents continue to share the current filesystem.
 
+## Quiet supervisor activity
+
+Runs initiated by hidden custom messages (including harness state updates) are
+projected as background activity, not new foreground start/finish cycles. Tool,
+reasoning, and text updates still stream, but a silent internal finish cannot
+trigger Paseo's stale-last-message completion notification. A real user message
+or a new visible final reply promotes the run to a foreground turn. Terminal
+errors remain visible; permission requests use their unchanged immediate path.
+
+The bridge waits for Pi's `agent_settled` boundary before emitting one compatible
+completion event, avoiding premature completion during retries. Actual
+`get_state.isStreaming` and prompt dispatch are unchanged. Paseo's foreground
+badge does not track otherwise-silent internal supervision cycles. No Paseo
+provider or notification-policy patch is required for this behavior.
+
 ## Known limitations (v1)
 
 - Except for the explicit `/reload` support above, built-in interactive-only
