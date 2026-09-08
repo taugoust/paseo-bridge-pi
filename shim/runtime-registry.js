@@ -55,10 +55,39 @@ export function harnessRuntimeMetadata(env = process.env) {
   };
 }
 
-export function markPaseoAgentPane(placement, agentId, run = spawnSync) {
-  if (!placement.tmuxSocket || !/^%\d+$/.test(placement.tmuxPane ?? "") || !agentId) return false;
-  const result = run("tmux", ["-S", placement.tmuxSocket, "set-option", "-p", "-t", placement.tmuxPane,
-    "@paseo_agent_id", agentId], { encoding: "utf8", timeout: 5000 });
+function validPaneOwner(placement, agentId, identity) {
+  return placement.tmuxSocket && /^%\d+$/.test(placement.tmuxPane ?? "")
+    && (agentId == null || /^[a-zA-Z0-9_-]+$/.test(agentId))
+    && Number.isSafeInteger(identity.pid) && identity.pid > 0
+    && typeof identity.startToken === "string" && /^[a-f0-9-]+:\d+$/.test(identity.startToken);
+}
+
+export function markPaseoAgentPane(placement, agentId, run = spawnSync,
+  identity = { pid: process.pid, startToken: processStartToken() }) {
+  if (!validPaneOwner(placement, agentId, identity)) return false;
+  const pane = placement.tmuxPane;
+  // Publish the complete owner tuple in one server command queue, not detached
+  // children that can outlive Pi and overwrite a successor's pane tags.
+  const result = run("tmux", ["-S", placement.tmuxSocket,
+    "set-option", "-p", "-t", pane, "@paseo_pi_agent_pid", String(identity.pid), ";",
+    "set-option", "-p", "-t", pane, "@paseo_pi_agent_start_token", identity.startToken, ";",
+    ...(agentId == null ? ["set-option", "-p", "-u", "-t", pane, "@paseo_agent_id"]
+      : ["set-option", "-p", "-t", pane, "@paseo_agent_id", agentId]),
+  ], { encoding: "utf8", timeout: 5000 });
+  return result.status === 0;
+}
+
+export function clearPaseoAgentPane(placement, agentId, run = spawnSync,
+  identity = { pid: process.pid, startToken: processStartToken() }) {
+  if (!validPaneOwner(placement, agentId, identity)) return false;
+  const pane = placement.tmuxPane;
+  const condition = `#{&&:#{==:#{@paseo_agent_id},${agentId ?? ""}},#{&&:#{==:#{@paseo_pi_agent_pid},${identity.pid}},#{==:#{@paseo_pi_agent_start_token},${identity.startToken}}}}`;
+  const clear = ["@paseo_agent_id", "@paseo_pi_agent_pid", "@paseo_pi_agent_start_token"]
+    .map(tag => `set-option -p -u -t ${pane} ${tag}`).join(" ; ");
+  // Evaluate ownership and enqueue cleanup on the tmux server. Never inspect
+  // locally then unconditionally clear: that races a new Pi claiming the pane.
+  const result = run("tmux", ["-S", placement.tmuxSocket, "if-shell", "-F", "-t", pane, condition, clear],
+    { encoding: "utf8", timeout: 5000 });
   return result.status === 0;
 }
 

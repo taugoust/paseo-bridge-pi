@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
-import { assertNoLiveRuntimeOwner, processStartToken, harnessRuntimeMetadata, resolveTmuxIdentity, markPaseoAgentPane, validRuntimeReapingEvent, REAPED_RUNTIME_ERROR } from "../shim/runtime-registry.js";
+import { assertNoLiveRuntimeOwner, processStartToken, harnessRuntimeMetadata, resolveTmuxIdentity, markPaseoAgentPane, clearPaseoAgentPane, validRuntimeReapingEvent, REAPED_RUNTIME_ERROR } from "../shim/runtime-registry.js";
 import { fileURLToPath } from "node:url";
 import { parseTmuxTarget } from "../shim/tmux-target.js";
 import { paseoImportArgs, importRetryDelay, retryableWorkspaceImportFailure, workspaceIdForPlacement } from "./import-placement.js";
@@ -272,6 +272,8 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   let placementTimer: ReturnType<typeof setInterval> | undefined;
   let lastPlacement = "";
   let lastAgentTag = "";
+  const paneOwnerIdentity = { pid: process.pid, startToken: processStartToken() };
+  let ownedPaneTag: { placement: ReturnType<typeof resolveTmuxIdentity>; agentId: string | null } | null = null;
   let reapedRuntime: { workerEpoch: string; reapSealedAt: string } | null = null;
   const runtimeReapingIdentity = {
     PI_HARNESS_RUNTIME_ID: process.env.PI_HARNESS_RUNTIME_ID,
@@ -324,6 +326,20 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function markTmuxPane(active: boolean): void {
+    if (process.platform === "linux") {
+      if (active) {
+        const placement = resolveTmuxIdentity();
+        if (markPaseoAgentPane(placement, currentAgentId, undefined, paneOwnerIdentity)) {
+          ownedPaneTag = { placement, agentId: currentAgentId };
+          lastAgentTag = JSON.stringify([placement.tmuxSocket, placement.tmuxPane, currentAgentId]);
+        }
+      } else if (ownedPaneTag) {
+        clearPaseoAgentPane(ownedPaneTag.placement, ownedPaneTag.agentId, undefined, paneOwnerIdentity);
+        ownedPaneTag = null;
+        lastAgentTag = "";
+      }
+      return;
+    }
     const pane = process.env.TMUX_PANE?.trim();
     if (!pane || process.platform === "win32") return;
     if (!active && markedTmuxPane !== pane) return;
@@ -963,7 +979,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   function tagAgentPane(placement = resolveTmuxIdentity()): void {
     if (process.platform !== "linux" || !currentAgentId || !placement.tmuxPane) return;
     const key = JSON.stringify([placement.tmuxSocket, placement.tmuxPane, currentAgentId]);
-    if (key !== lastAgentTag && markPaseoAgentPane(placement, currentAgentId)) lastAgentTag = key;
+    if (key !== lastAgentTag && markPaseoAgentPane(placement, currentAgentId, undefined, paneOwnerIdentity)) {
+      lastAgentTag = key;
+      ownedPaneTag = { placement, agentId: currentAgentId };
+    }
   }
 
   function adoptAgent(agentId: string, reused: boolean): void {

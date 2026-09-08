@@ -10,7 +10,7 @@ import { tmuxServerIdentity } from "../shim/tmux-target.js";
 import { shellQuote } from "../shim/tmux-fork.js";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { workspaceIdForPlacement } from "../extension/import-placement.ts";
-import { runtimeOwnerMayBeAlive } from "../shim/runtime-registry.js";
+import { runtimeOwnerMayBeAlive, processStartToken } from "../shim/runtime-registry.js";
 
 const piBin = process.env.TEST_PI_BIN;
 async function poll(check: () => boolean, message: string, timeout = 10000) {
@@ -31,6 +31,59 @@ async function cleanupTmux(tmux: (...args: string[]) => unknown, root: string) {
   await poll(() => owners.every(owner => !runtimeOwnerMayBeAlive(owner)), "test Pi process did not finish shutdown");
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
+
+for (const successor of [false, true, "reused-pid"]) test(`manual Pi returns to shell: ${successor === "reused-pid" ? "PID-reuse tags protected" : successor ? "successor tags protected" : "owned tags cleared"}`, { skip: !piBin, timeout: 30000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-return-"));
+  const socket = path.join(root, "tmux.sock");
+  const session = path.join(root, "session.jsonl");
+  const noPaseo = path.join(root, "paseo-unavailable");
+  fs.writeFileSync(noPaseo, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  const env = { ...process.env, PASEO_CLI: noPaseo, HOME: root, XDG_RUNTIME_DIR: root, PI_CODING_AGENT_DIR: path.join(root, "agent"),
+    PI_PASEO_BRIDGE: "on", PI_PASEO_BRIDGE_NO_IMPORT: "1", PI_PASEO_BRIDGE_NO_TITLE: "1", PI_TELEMETRY: "0",
+    PI_PASEO_EXISTING_AGENT_ID: "manual-agent", PI_PASEO_AGENT_SOCKET: path.join(root, "bridge.sock"), PI_HARNESS_RUNTIME_ID: "", PI_PASEO_TMUX_TARGET: undefined };
+  const tmux = (...args: string[]) => spawnSync("tmux", ["-S", socket, ...args], { env, encoding: "utf8", timeout: 5000 });
+  try {
+    const command = `${shellQuote(piBin!)} --no-extensions --extension ${shellQuote(path.resolve("extension/index.ts"))} --session ${shellQuote(session)}; exec /bin/sh`;
+    const start = tmux("new-session", "-d", "-s", "manual", "-x", "160", "-y", "50", command);
+    assert.equal(start.status, 0, start.stderr);
+    const pane = tmux("display-message", "-p", "#{pane_id}").stdout.trim();
+    const directory = path.join(root, ".pi", "paseo-bridge", "runtimes");
+    const record = () => {
+      try { const file = fs.readdirSync(directory).find(file => file.endsWith(".json")); return file ? JSON.parse(fs.readFileSync(path.join(directory, file), "utf8")) : null; } catch { return null; }
+    };
+    await poll(() => record()?.agentId === "manual-agent", "manual Pi did not start");
+    const owner = record();
+    const tag = (name: string) => tmux("show-options", "-pqv", "-t", pane, name).stdout.trim();
+    assert.equal(tag("@paseo_agent_id"), "manual-agent");
+    assert.equal(tag("@paseo_pi_agent_pid"), String(owner.pid));
+    assert.equal(tag("@paseo_pi_agent_start_token"), processStartToken(owner.pid));
+    if (!successor) {
+      const client = net.connect(owner.bridgeSocket);
+      let output = "";
+      client.on("data", chunk => { output += chunk; });
+      client.on("error", () => {});
+      await once(client, "connect");
+      client.write(JSON.stringify({ id: "reload", type: "prompt", message: "/remote-reload" }) + "\n");
+      await poll(() => output.includes("Pi runtime reloaded."), "manual Pi reload did not complete");
+      client.destroy();
+      assert.equal(tag("@paseo_agent_id"), "manual-agent");
+      assert.equal(tag("@paseo_pi_agent_pid"), String(owner.pid));
+      assert.equal(tag("@paseo_pi_agent_start_token"), processStartToken(owner.pid));
+    }
+    const successorPid = successor === "reused-pid" ? owner.pid : process.pid;
+    if (successor) {
+      assert.equal(tmux("set-option", "-p", "-t", pane, "@paseo_pi_agent_pid", String(successorPid), ";",
+        "set-option", "-p", "-t", pane, "@paseo_pi_agent_start_token", processStartToken()!).status, 0);
+    }
+    process.kill(owner.pid, "SIGTERM");
+    await poll(() => !runtimeOwnerMayBeAlive(owner), "manual Pi did not exit");
+    assert.equal(record(), null);
+    assert.equal(tmux("display-message", "-p", "-t", pane, "#{pane_id}").stdout.trim(), pane, "plain Pi exit must retain its shell pane");
+    assert.equal(tag("@paseo_agent_id"), successor ? "manual-agent" : "");
+    assert.equal(tag("@paseo_pi_agent_pid"), successor ? String(successorPid) : "");
+    assert.equal(tag("@paseo_pi_agent_start_token"), successor ? processStartToken() : "");
+  } finally { await cleanupTmux(tmux, root); }
+});
 
 for (const explicitReap of [false, true]) test(`staged TUI promotion and ${explicitReap ? "explicit reap tombstone" : "ordinary shutdown cleanup"}`,  { skip: !piBin, timeout: 30000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-promotion-"));

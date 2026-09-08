@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { assertNoLiveRuntimeOwner, claimRuntimeLaunch, harnessRuntimeMetadata, markPaseoAgentPane, validRuntimeReapingEvent, assertRuntimeNotReaped, matchingRuntimeRecords, processStartToken, resolveTmuxIdentity, runtimeOwnerMayBeAlive } from "../shim/runtime-registry.js";
+import { assertNoLiveRuntimeOwner, claimRuntimeLaunch, harnessRuntimeMetadata, markPaseoAgentPane, clearPaseoAgentPane, validRuntimeReapingEvent, assertRuntimeNotReaped, matchingRuntimeRecords, processStartToken, resolveTmuxIdentity, runtimeOwnerMayBeAlive } from "../shim/runtime-registry.js";
 import { killForkPaneForAgent } from "../shim/tmux-fork.js";
 
 const record = { sessionFile: "/project/session.jsonl", agentId: "agent", pid: 123, processStartToken: "boot:1" };
@@ -53,9 +53,17 @@ test("actual pane resolution canonicalizes socket aliases and agent tags use tha
   }, () => "/canonical");
   assert.equal(placement.tmuxSocket, "/canonical");
   assert.equal(markPaseoAgentPane(placement, "agent", (_command, args) => {
-    assert.deepEqual(args, ["-S", "/canonical", "set-option", "-p", "-t", "%5", "@paseo_agent_id", "agent"]);
+    assert.deepEqual(args, ["-S", "/canonical", "set-option", "-p", "-t", "%5", "@paseo_pi_agent_pid", "42", ";",
+      "set-option", "-p", "-t", "%5", "@paseo_pi_agent_start_token", "abc:123", ";",
+      "set-option", "-p", "-t", "%5", "@paseo_agent_id", "agent"]);
     return { status: 0 };
-  }), true);
+  }, { pid: 42, startToken: "abc:123" }), true);
+  assert.equal(clearPaseoAgentPane(placement, "agent", (_command, args) => {
+    assert.deepEqual(args.slice(0, 6), ["-S", "/canonical", "if-shell", "-F", "-t", "%5"]);
+    assert.equal(args[6], "#{&&:#{==:#{@paseo_agent_id},agent},#{&&:#{==:#{@paseo_pi_agent_pid},42},#{==:#{@paseo_pi_agent_start_token},abc:123}}}");
+    assert.equal(args[7], "set-option -p -u -t %5 @paseo_agent_id ; set-option -p -u -t %5 @paseo_pi_agent_pid ; set-option -p -u -t %5 @paseo_pi_agent_start_token");
+    return { status: 0 };
+  }, { pid: 42, startToken: "abc:123" }), true);
 });
 test("managed children are never reaped by fork archive cleanup", () => {
   assert.equal(killForkPaneForAgent("agent", { runtimeRecord: { ...record, forkCreated: true, managed: true }, spawnSync() { throw new Error("must not touch tmux"); } }), false);

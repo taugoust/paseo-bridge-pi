@@ -217,9 +217,13 @@ pane. Workspace/projection rejections retry up to five times with bounded backof
 even if the pane does not move again; each retry resolves live placement anew.
 Missing native identity fails closed instead of importing into an inferred
 workspace. Successful-but-ambiguous responses are not retried automatically.
-Immediately after import/adoption, the bridge tags the actual pane with
-`@paseo_agent_id`, allowing the server to suppress a duplicate terminal entry and
-relocate the same agent when its pane moves.
+Immediately after import/adoption, the Linux bridge tags the actual pane with
+`@paseo_agent_id`, `@paseo_pi_agent_pid`, and `@paseo_pi_agent_start_token`
+(`bootId:startTicks`) together, allowing the server to suppress a duplicate
+terminal entry and relocate the same agent when its pane moves. Normal Pi exit
+clears these tags only if the entire owner tuple still matches, leaving a returned
+shell visible and preserving any successor Pi's tags. It does not kill the shell
+or pane. Reload retains the tags; explicit-reap registry tombstones remain intact.
 
 The shim discovers recorded bridge endpoints and refuses to spawn another Pi
 when a matching runtime process may still be alive, even if its socket is
