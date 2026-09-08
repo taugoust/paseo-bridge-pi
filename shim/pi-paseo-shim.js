@@ -247,7 +247,8 @@ function forkAwarePassthrough() {
       supervised: supervisedTuiBin,
       unsafe: unsafeTuiBin,
     });
-    const forkSessionFile = createForkedSession(plan.sourceSessionFile, plan.sourceEntryId);
+    if (plan.trimmedIncompleteTools) process.stderr.write("pi-paseo-shim: fork snapshot omitted the unfinished native tool-call batch; completed context was preserved.\n");
+    const forkSessionFile = createForkedSession(plan.sourceSessionFile, plan.sourceEntryId, plan.sourceSnapshot);
     const launched = launchForkTui({
       placement: plan.placement,
       sourcePane,

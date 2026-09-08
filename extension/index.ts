@@ -17,7 +17,7 @@ import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { completeSimple } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { BridgeTransport, retainBridgeForReload, takeBridgeAfterReload, discardRetainedBridge } from "./bridge-transport.js";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
@@ -794,6 +794,23 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   function bindTransport(): void {
     transport?.bind({
       command: handleCommand,
+      forkSnapshot() {
+        const sm = latestCtx?.sessionManager;
+        if (!sm || reloadRequested) throw new Error("Native session snapshot unavailable");
+        // Cursor and compact context metadata are captured atomically. Historical
+        // text stays on disk; only tool-exchange validity crosses the socket.
+        return {
+          sessionFile: sm.getSessionFile(),
+          leafId: sm.getLeafId(),
+          messages: buildSessionContext(sm.getEntries(), sm.getLeafId()).messages.map((message: any) => ({
+            role: message.role,
+            ...(message.role === "toolResult" ? { toolCallId: message.toolCallId } : {}),
+            content: Array.isArray(message.content)
+              ? message.content.filter((block: any) => block.type === "toolCall").map((block: any) => ({ type: "toolCall", id: block.id }))
+              : [],
+          })),
+        };
+      },
       attached() {
         providerReconnect.connected();
         debugLog("client connected");
@@ -844,6 +861,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       const temporary = `${destination}.${process.pid}.tmp`;
       fs.writeFileSync(temporary, `${JSON.stringify({
         sessionFile: path.resolve(sessionFile),
+        bridgeSocket: pipePathForSession(sessionFile),
         agentId: currentAgentId,
         cwd,
         pid: process.pid,

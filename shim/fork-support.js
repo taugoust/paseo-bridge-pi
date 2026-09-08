@@ -116,11 +116,92 @@ function readSession(sessionFile) {
 }
 
 function assistantEntries(entries, historyBody) {
-  return entries.filter((entry) => {
-    if (entry?.type !== "message" || entry.message?.role !== "assistant") return false;
+  const matches = [];
+  for (const entry of entries) {
+    if (entry?.type !== "message" || entry.message?.role !== "assistant") continue;
     const text = textContent(entry.message.content).trim();
-    return Boolean(text) && historyBody.endsWith(`[Assistant] ${text}`);
-  });
+    if (!text) continue;
+    const needle = `[Assistant] ${text}`;
+    for (let start = historyBody.indexOf(needle); start !== -1; start = historyBody.indexOf(needle, start + 1)) {
+      if (start && historyBody[start - 1] !== "\n") continue;
+      const end = start + needle.length;
+      const tail = historyBody.slice(end);
+      // Match complete native text first: markers inside it are not delimiters.
+      const trailingTools = /^\n+\[(?!Assistant\]|User\])[^\]\n]+\](?: |\n|$)/.test(tail)
+        && !/^\[(?:Assistant|User)\]/m.test(tail);
+      if (!tail || trailingTools) matches.push({ entry, start, end, trailingTools });
+    }
+  }
+  return matches.filter((match) => !matches.some((other) => other.start < match.start && other.end > match.start));
+}
+
+// Query the running session, never infer its active leaf from JSONL append order.
+// branch()/resetLeaf() can move the native cursor without writing a record.
+export function readLiveForkSnapshot(sessionFile) {
+  const key = crypto.createHash("sha256").update(path.resolve(sessionFile)).digest("hex");
+  let record;
+  try {
+    record = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "paseo-bridge", "runtimes", `${key}.json`), "utf8"));
+  } catch { /* Fall back to the ordinary session socket. */ }
+  const dir = process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, "pi-paseo") : path.join(os.homedir(), ".pi", "paseo-bridge");
+  const socketPath = `${record?.bridgeSocket || path.join(dir, `${key.slice(0, 20)}.sock`)}.fork`;
+  const script = `
+    const net = require('node:net');
+    const socket = net.connect(process.argv[1]);
+    let buffer = '';
+    socket.setTimeout(5000, () => process.exit(2));
+    socket.on('error', () => process.exit(2));
+    socket.on('data', chunk => {
+      buffer += chunk;
+      let end;
+      while ((end = buffer.indexOf('\\n')) !== -1) {
+        const line = buffer.slice(0,end); buffer = buffer.slice(end+1);
+        let value; try { value = JSON.parse(line); } catch { continue; }
+        if (value.id === 'fork-snapshot' && value.type === 'response') {
+          process.stdout.write(JSON.stringify(value)); socket.end();
+        }
+      }
+    });`;
+  const result = spawnSync(process.execPath, ["-e", script, socketPath], { encoding: "utf8", timeout: 6000, maxBuffer: 64 * 1024 * 1024 });
+  let response;
+  try { response = JSON.parse(result.stdout); } catch { /* Fail closed below. */ }
+  if (result.status !== 0 || !response?.success || response.data?.sessionFile !== path.resolve(sessionFile)) {
+    throw new Error("could not obtain the current native branch snapshot; update the source bridge and retry");
+  }
+  return response.data;
+}
+
+function branchEntries(entries, leafId) {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const branch = [], seen = new Set();
+  for (let id = leafId; id; ) {
+    if (seen.has(id) || !byId.has(id)) throw new Error("invalid native branch snapshot");
+    seen.add(id);
+    const entry = byId.get(id);
+    branch.push(entry);
+    id = entry.parentId;
+  }
+  return branch.reverse();
+}
+
+function validateToolContext(messages) {
+  const pending = new Set();
+  let batch = null;
+  for (const message of messages) {
+    if (message.role === "toolResult") {
+      if (!pending.delete(message.toolCallId)) throw new Error("unmatched tool result in native fork context");
+    } else {
+      if (pending.size) throw new Error("incomplete tool exchange in native fork context; retry when complete");
+      for (const block of Array.isArray(message.content) ? message.content : []) {
+        if (block.type === "toolCall") {
+          if (!block.id || pending.has(block.id)) throw new Error("invalid native tool call IDs");
+          pending.add(block.id);
+          batch = message;
+        }
+      }
+    }
+  }
+  return pending.size ? batch : null;
 }
 
 export function resolveForkSource(input) {
@@ -140,12 +221,13 @@ export function resolveForkSource(input) {
       continue;
     }
     if (input.fork.cwd && normalizePath(session.header.cwd) !== normalizePath(input.fork.cwd)) continue;
-    for (const entry of assistantEntries(session.entries, input.fork.body)) {
+    for (const { entry, trailingTools } of assistantEntries(session.entries, input.fork.body)) {
       matches.push({
         sourceAgent: agentsById.get(agentId),
         sourceAgentId: agentId,
         sourceSessionFile: sessionFile,
         sourceEntryId: entry.id,
+        trailingTools,
         sourceWorkspaceId: agentsById.get(agentId)?.workspaceId ?? null,
       });
     }
@@ -157,11 +239,38 @@ export function resolveForkSource(input) {
   if (matches.length > 1) {
     throw new Error("the Paseo fork context matched multiple Pi session entries; refusing an ambiguous fork");
   }
-  return matches[0];
+  const match = matches[0];
+  if (match.trailingTools) {
+    const manifest = (input.readSnapshot ?? readLiveForkSnapshot)(match.sourceSessionFile);
+    const snapshot = { ...readSession(match.sourceSessionFile), ...manifest };
+    const anchors = assistantEntries(snapshot.entries, input.fork.body);
+    if (anchors.length !== 1 || anchors[0].entry.id !== match.sourceEntryId) {
+      throw new Error("the current native snapshot has ambiguous or missing assistant anchors");
+    }
+    const branch = branchEntries(snapshot.entries, snapshot.leafId);
+    if (!branch.some((entry) => entry.id === match.sourceEntryId)) {
+      throw new Error("the terminal assistant anchor is not on the current native branch");
+    }
+    if (!Array.isArray(snapshot.messages)) throw new Error("missing native session context in fork snapshot");
+    const unfinished = validateToolContext(snapshot.messages);
+    match.sourceEntryId = snapshot.leafId;
+    if (unfinished) {
+      const callIds = unfinished.content.filter((block) => block.type === "toolCall").map((block) => block.id);
+      const index = branch.findIndex((entry) => entry.type === "message" && entry.message.role === "assistant"
+        && entry.message.content?.some((block) => block.type === "toolCall" && callIds.includes(block.id)));
+      if (index < 1 || !branch.slice(0, index).some((entry) => entry.type === "message" && entry.message.role === "assistant")) {
+        throw new Error("cannot safely trim unfinished tools to a completed native checkpoint");
+      }
+      match.sourceEntryId = branch[index - 1].id;
+      match.trimmedIncompleteTools = true;
+    }
+    match.sourceSnapshot = { header: snapshot.header, entries: snapshot.entries };
+  }
+  return match;
 }
 
-export function createForkedSession(sourceSessionFile, sourceEntryId) {
-  const { header, entries } = readSession(sourceSessionFile);
+export function createForkedSession(sourceSessionFile, sourceEntryId, snapshot) {
+  const { header, entries } = snapshot ?? readSession(sourceSessionFile);
   const byId = new Map(entries.filter((entry) => typeof entry?.id === "string").map((entry) => [entry.id, entry]));
   const reversed = [];
   let currentId = sourceEntryId;
@@ -212,6 +321,7 @@ export function resolveForkPlan(input) {
     targetAgentId: input.targetAgentId,
     agents,
     agentMapFile: input.agentMapFile,
+    readSnapshot: input.readSnapshot,
   });
   return {
     ...source,

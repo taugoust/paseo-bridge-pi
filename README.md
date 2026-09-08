@@ -174,7 +174,7 @@ for development only — the supported install is the pi package flow above.
 
 ## Paseo forks in tmux
 
-When a TUI launcher is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response, and replaces the temporary RPC backend with an interactive TUI. The source runtime record selects the matching trust mode: a supervised `pi` source launches supervised `pi`, while a `pi-unsafe` source launches `pi-unsafe`. During that conversion the shim removes Paseo's generated RPC-only integration extension; the package bridge remains loaded and prevents internal capture markers from appearing as TUI notifications.
+When a TUI launcher is configured, the provider shim recognizes the chat-history attachment on the first prompt of a Paseo fork. It resolves that history against a live attached Pi session, creates a real Pi JSONL branch at the selected assistant response (or the current native branch for whole-agent histories ending in tools), and replaces the temporary RPC backend with an interactive TUI. The source runtime record selects the matching trust mode: a supervised `pi` source launches supervised `pi`, while a `pi-unsafe` source launches `pi-unsafe`. During that conversion the shim removes Paseo's generated RPC-only integration extension; the package bridge remains loaded and prevents internal capture markers from appearing as TUI notifications.
 
 - **Fork in new tab** creates a pane in the source agent's tmux window because Paseo assigns both agents to the same workspace.
 - **Fork in new workspace** creates a window in the source agent's tmux session because Paseo assigns a different workspace.
@@ -182,7 +182,9 @@ When a TUI launcher is configured, the provider shim recognizes the chat-history
 
 The fork is created when the draft is submitted, not when the Fork menu item is clicked. The bridge removes Paseo's text history from the forwarded prompt because the native Pi branch already contains that context. An attachment-only submission creates an idle fork; a submitted message starts the new branch with that message.
 
-Source and boundary resolution is deliberately fail-closed. The source title, cwd, and selected assistant text must resolve to exactly one live bridged session entry. Ambiguous or stale matches return an error rather than falling back to a potentially incorrect branch. Conversation state is forked, but both agents continue to share the current filesystem.
+Source and boundary resolution is deliberately fail-closed. The source title, cwd, and terminal assistant text must resolve to exactly one bridged session entry. Histories ending at an assistant response retain that exact checkpoint, even if the source has progressed. Whole-agent histories with trailing tool entries use that exact assistant text as an anchor: it must be unique and an ancestor of the **current native branch at submission**. The bridge reads the running session's cursor through a separate read-only socket (without disconnecting Paseo), then snapshots its JSONL ancestry; it never selects the last historical entry or an unrelated branch. Later source activity is not included. Older source bridges without the snapshot endpoint must be updated before these forks can resolve.
+
+If the native context ends midway through a tool-call batch, the snapshot rolls back only that unfinished assistant batch and its partial results, preserving earlier completed tool turns. The shim reports this trim on stderr. No tool results are invented and no source tools are restarted. Invalid tool context, missing anchors, and ambiguous or stale matches return an error rather than guessing. The source session is never rewritten. Conversation state is forked, but both agents continue to share the current filesystem.
 
 ## Quiet supervisor activity
 

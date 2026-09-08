@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 
 type Callbacks = {
   command(value: any): Promise<void>;
+  forkSnapshot?(): unknown;
   attached(): void;
   detached(): void;
   error(error: unknown): void;
@@ -13,6 +14,7 @@ type Callbacks = {
 /** Socket ownership is independent of the replaceable extension context. */
 export class BridgeTransport {
   private server: net.Server | null = null;
+  private snapshotServer: net.Server | null = null;
   private client: net.Socket | null = null;
   private callbacks?: Callbacks;
   private closed = false;
@@ -29,6 +31,7 @@ export class BridgeTransport {
 
   bind(callbacks: Callbacks): void {
     this.callbacks = callbacks;
+    if (this.server) this.ensureForkSnapshotEndpoint();
     if (this.connected) callbacks.attached();
   }
 
@@ -39,12 +42,37 @@ export class BridgeTransport {
       fs.mkdirSync(path.dirname(this.pipePath), { recursive: true, mode: 0o700 });
       try { fs.unlinkSync(this.pipePath); } catch {}
     }
+    this.ensureForkSnapshotEndpoint();
     this.server = net.createServer((socket) => this.attach(socket));
     this.server.on("error", (error) => this.callbacks?.error(error));
     this.server.listen(this.pipePath, () => {
       if (process.platform !== "win32") {
         try { fs.chmodSync(this.pipePath, 0o600); } catch {}
       }
+    });
+  }
+
+  private ensureForkSnapshotEndpoint(): void {
+    if (this.snapshotServer || this.closed) return;
+    // A separate read-only endpoint never takes over Paseo's controller socket.
+    const snapshotPath = `${this.pipePath}.fork`;
+    if (process.platform !== "win32") {
+      try { fs.unlinkSync(snapshotPath); } catch {}
+    }
+    this.snapshotServer = net.createServer((socket) => {
+      socket.on("error", (error) => this.callbacks?.error(error));
+      let response;
+      try {
+        if (!this.callbacks?.forkSnapshot) throw new Error("Native fork snapshot unavailable; retry after bridge update");
+        response = { type: "response", id: "fork-snapshot", success: true, data: this.callbacks.forkSnapshot() };
+      } catch (error) {
+        response = { type: "response", id: "fork-snapshot", success: false, error: String(error) };
+      }
+      socket.end(`${JSON.stringify(response)}\n`);
+    });
+    this.snapshotServer.on("error", (error) => this.callbacks?.error(error));
+    this.snapshotServer.listen(snapshotPath, () => {
+      if (process.platform !== "win32") { try { fs.chmodSync(snapshotPath, 0o600); } catch {} }
     });
   }
 
@@ -62,8 +90,11 @@ export class BridgeTransport {
     this.client = null;
     this.server?.close();
     this.server = null;
+    this.snapshotServer?.close();
+    this.snapshotServer = null;
     if (process.platform !== "win32") {
       try { fs.unlinkSync(this.pipePath); } catch {}
+      try { fs.unlinkSync(`${this.pipePath}.fork`); } catch {}
     }
   }
 
@@ -148,6 +179,10 @@ export function takeBridgeAfterReload(sessionFile: string | undefined): Omit<Ret
   }
   delete root[RELOAD_BRIDGE_KEY];
   clearTimeout(retained.timer);
+  // A retained pre-snapshot transport has the old module's prototype. Upgrade
+  // methods in place, preserving its live controller/server; bind() adds only
+  // the new read-only endpoint and close() owns its cleanup.
+  Object.setPrototypeOf(retained.transport, BridgeTransport.prototype);
   return { transport: retained.transport, agentId: retained.agentId, titleAttempted: retained.titleAttempted };
 }
 

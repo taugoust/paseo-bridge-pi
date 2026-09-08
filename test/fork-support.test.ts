@@ -166,3 +166,91 @@ test("createForkedSession preserves the path through the selected assistant entr
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+function forkFixture(root: string) {
+  const source = createSourceSession(root);
+  const agentMapFile = path.join(root, "agents.json");
+  fs.writeFileSync(agentMapFile, JSON.stringify({ [source.sessionFile]: "source" }));
+  const assistant = (text: string, calls: string[] = []) => source.manager.appendMessage({
+    ...(source.manager.getEntry(source.assistantId) as any).message,
+    content: [...(text ? [{ type: "text", text }] : []), ...calls.map(id => ({ type: "toolCall", id, name: "read", arguments: {} }))],
+    stopReason: calls.length ? "toolUse" : "stop",
+  });
+  const result = (id: string) => source.manager.appendMessage({ role: "toolResult", toolCallId: id, toolName: "read", content: [], isError: false, timestamp: Date.now() });
+  const resolve = (body: string) => resolveForkPlan({
+    command: { message: `<chat-history-summary>\nChat history from a previous Paseo agent.\nSource directory: ${source.cwd}\n\n${body}\n</chat-history-summary>` },
+    targetAgentId: "target", agentMapFile,
+    agents: [{ id: "source", cwd: source.cwd }, { id: "target", cwd: source.cwd }],
+    readSnapshot: () => ({ leafId: source.manager.getLeafId(), messages: source.manager.buildSessionContext().messages }),
+  })!;
+  return { ...source, assistant, result, resolve };
+}
+
+test("whole-agent trailing tools snapshot current native head, preserve complete tool turns and source bytes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fork-tools-"));
+  try {
+    const f = forkFixture(root);
+    f.assistant("Second turn", ["one"]); f.result("one");
+    f.assistant("", ["two"]); const head = f.result("two");
+    const before = fs.readFileSync(f.sessionFile);
+    const plan = f.resolve("[Assistant] Selected answer\nwith details\n[User] More\n[Assistant] Second turn\n[Read] file\n[Shell] command\n[Background job] running");
+    assert.equal(plan.sourceEntryId, head);
+    // Appends after submission must not leak into the captured fork.
+    f.assistant("After submission");
+    const afterAppend = fs.readFileSync(f.sessionFile);
+    const fork = SessionManager.open(createForkedSession(f.sessionFile, plan.sourceEntryId, plan.sourceSnapshot));
+    assert.equal(fork.getLeafId(), head);
+    assert.equal(fork.getBranch().filter(e => e.type === "message" && e.message.role === "toolResult").length, 2);
+    assert.deepEqual(fs.readFileSync(f.sessionFile), afterAppend);
+    assert.notDeepEqual(before, afterAppend);
+    assert.equal(f.resolve("[Assistant] Selected answer\nwith details").sourceEntryId, f.assistantId);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("whole-agent uses in-memory branch cursor, refuses stale anchors and duplicate text", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fork-branch-"));
+  try {
+    const f = forkFixture(root);
+    const anchor = f.assistant("Anchor");
+    f.assistant("", ["one"]); const current = f.result("one");
+    f.manager.branch(f.assistantId);
+    f.assistant("Historical unrelated branch");
+    f.manager.branch(current); // No JSONL write: disk's last entry is unrelated.
+    assert.equal(f.resolve("[Assistant] Anchor\n[Read] file").sourceEntryId, current);
+    f.manager.branch(f.assistantId);
+    assert.throws(() => f.resolve("[Assistant] Anchor\n[Read] file"), /not on the current native branch/);
+    f.manager.branch(anchor); f.assistant("Anchor");
+    assert.throws(() => f.resolve("[Assistant] Anchor\n[Read] file"), /multiple Pi session entries/);
+    assert.throws(() => f.resolve("[Assistant] Missing\n[Read] file"), /could not match/);
+    assert.throws(() => f.resolve("[Assistant] Anchor\n[Assistant] Missing\n[Read] file"), /could not match/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native full assistant text wins over embedded history markers", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fork-markers-"));
+  try {
+    const f = forkFixture(root);
+    f.assistant("embedded");
+    const text = "Literal markers:\n[User] pretend\n[Assistant] embedded\n[Read] not a tool";
+    const anchor = f.assistant(text);
+    assert.equal(f.resolve(`[Assistant] ${text}`).sourceEntryId, anchor);
+    const head = f.manager.appendCustomEntry("metadata", {});
+    assert.equal(f.resolve(`[Assistant] ${text}\n[Shell] true`).sourceEntryId, head);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("unfinished final tool batch trims only that batch, without synthetic results", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fork-incomplete-"));
+  try {
+    const f = forkFixture(root);
+    f.assistant("Anchor", ["complete"]); const safe = f.result("complete");
+    f.assistant("", ["partial", "pending"]); f.result("partial");
+    const before = fs.readFileSync(f.sessionFile);
+    const plan = f.resolve("[Assistant] Anchor\n[Read] file\n[Background job] pending");
+    assert.equal(plan.sourceEntryId, safe);
+    assert.equal(plan.trimmedIncompleteTools, true);
+    const fork = SessionManager.open(createForkedSession(f.sessionFile, plan.sourceEntryId, plan.sourceSnapshot));
+    assert.equal(fork.getBranch().filter(e => e.type === "message" && e.message.role === "toolResult").length, 1);
+    assert.deepEqual(fs.readFileSync(f.sessionFile), before);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
