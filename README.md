@@ -36,8 +36,8 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 | `/paseo-bridge connect` | Connect the current session to Paseo now. |
 | `/paseo-bridge disconnect` | Stop bridging the current session. |
 | `/paseo-bridge status` | Show shim / auto-connect / session state. |
-| `/reload` | From Paseo, reload Pi extensions and resources while the parent is idle. |
-| `/paseo-reload` | Explicit extension-command alias for the same idle-only reload (also works in native RPC sessions when this extension is loaded). |
+| `/reload` | Pi's built-in terminal-only reload; unsupported through the Paseo bridge. |
+| `/remote-reload` | Reload Pi extensions and resources while idle, from Paseo or native RPC when this extension is loaded. |
 
 ## What you get
 
@@ -72,7 +72,11 @@ bundles it at `.../Paseo/resources/bin/paseo.cmd` on Windows).
 
 ## Reloading Pi from Paseo
 
-Send `/reload` or `/paseo-reload` without arguments or attachments. The bridge
+Send `/remote-reload` without arguments or attachments. The old `/paseo-reload`
+alias has been removed. Pi's built-in `/reload` remains terminal-only: the bridge
+does not register it, and rejects it from Paseo with an unsupported-command error
+instead of reloading or sending a model prompt. `/remote-reload` also works in
+native RPC sessions when this extension is loaded. The bridge
 rejects reload while the parent is running, compacting, has queued messages, or
 has a pending UI/control request. It does not abort the parent or cancel its
 background work to make reload possible.
@@ -197,9 +201,9 @@ provider or notification-policy patch is required for this behavior.
 
 ## Known limitations (v1)
 
-- Except for the explicit `/reload` support above, built-in interactive-only
-  commands are not part of pi's RPC command list and cannot be dispatched as
-  prompts. Use Paseo's native controls for model and thinking changes; extension
+- Built-in interactive-only commands are not part of pi's RPC command list and
+  do not execute as commands when sent as prompts. The bridge explicitly rejects
+  `/reload`; use `/remote-reload` for remote reloads. Use Paseo's native controls for model and thinking changes; extension
   commands such as `/slow-mode` do work.
 - Extension UI dialogs (`ask_user` etc.) render in the TUI only; they are not
   forwarded to Paseo.

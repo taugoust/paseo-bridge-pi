@@ -60,9 +60,18 @@ test("real Pi reload acknowledges once, retains the Paseo socket and rebinds com
     };
     client.write('{"id":"before","type":"get_commands"}\n');
     const commands = await waitFor(frame => frame.id === "before");
-    assert(commands.data.commands.some((command: any) => command.name === "paseo-reload"));
+    assert(commands.data.commands.some((command: any) => command.name === "remote-reload"));
+    assert(!commands.data.commands.some((command: any) => ["reload", "paseo-reload"].includes(command.name)));
+    for (const [index, message] of ["/reload", " /reload \n", "/reload now"].entries()) {
+      const id = `unsupported-${index}`;
+      client.write(JSON.stringify({ id, type: "prompt", message }) + "\n");
+      const rejected = await waitFor(frame => frame.id === id);
+      assert.equal(rejected.success, false);
+      assert.match(rejected.error, /Unsupported command: \/reload is terminal-only.*\/remote-reload/);
+    }
+    assert(!frames.some(frame => frame.message?.startsWith("Pi runtime reloaded.")));
     const pid = child.pid;
-    for (const [index, command] of ["/reload", "/paseo-reload"].entries()) {
+    for (const [index, command] of ["/remote-reload", "/remote-reload"].entries()) {
       const id = `reload-${index}`;
       const start = frames.length;
       client.write(JSON.stringify({ id, type: "prompt", message: command }) + "\n");

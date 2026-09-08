@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "../extension/reload-command.ts";
 
-test("reload aliases are exact commands, never arbitrary prompt prefixes", () => {
-  for (const text of ["/reload", "/paseo-reload", " /reload \n"]) {
+test("remote reload is an exact command with no builtin or old alias", () => {
+  for (const text of ["/remote-reload", " /remote-reload \n"]) {
     assert.equal(isRuntimeReloadCommand(text), true);
     assert.doesNotThrow(() => validateReloadPrompt(text));
   }
-  for (const text of ["/reload-extra", "please /reload", "/paseo-reload-other"]) assert.equal(isRuntimeReloadCommand(text), false);
-  assert.throws(() => validateReloadPrompt("/reload now"), /without arguments/);
-  assert.throws(() => validateReloadPrompt("/reload", [{}]), /attachments/);
+  for (const text of ["/reload", "/reload now", "/paseo-reload", "/paseo-reload now", "/remote-reload-extra", "please /remote-reload"]) {
+    assert.equal(isRuntimeReloadCommand(text), false);
+    assert.throws(() => validateReloadPrompt(text), /Usage: \/remote-reload/);
+  }
+  assert.equal(isRuntimeReloadCommand("/remote-reload now"), true);
+  assert.throws(() => validateReloadPrompt("/remote-reload now"), /without arguments/);
+  assert.throws(() => validateReloadPrompt("/remote-reload", [{}]), /attachments/);
 });
 
 test("reload refuses active turns, queued work, compaction, UI requests and duplicate reloads", () => {

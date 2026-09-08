@@ -1,7 +1,7 @@
 type IdleContext = { isIdle(): boolean; hasPendingMessages(): boolean };
 
 export function isRuntimeReloadCommand(message: string): boolean {
-  return /^\/(?:reload|paseo-reload)(?:\s|$)/.test(message.trim());
+  return /^\/remote-reload(?:\s|$)/.test(message.trim());
 }
 
 export function requireIdleReload(
@@ -15,7 +15,7 @@ export function requireIdleReload(
 }
 
 export function validateReloadPrompt(message: string, images?: unknown[]): void {
-  if (!/^\/(?:reload|paseo-reload)\s*$/.test(message.trim()) || images?.length) {
-    throw new Error("Usage: /reload or /paseo-reload, without arguments or attachments.");
+  if (!/^\/remote-reload\s*$/.test(message.trim()) || images?.length) {
+    throw new Error("Usage: /remote-reload, without arguments or attachments.");
   }
 }

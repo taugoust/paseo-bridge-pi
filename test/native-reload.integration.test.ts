@@ -38,7 +38,11 @@ test("Paseo-native RPC sessions can dispatch reload as an extension command", { 
     return frames.find(predicate);
   };
   try {
-    child.stdin.write('{"id":"reload","type":"prompt","message":"/reload"}\n');
+    child.stdin.write('{"id":"commands","type":"get_commands"}\n');
+    const commands = (await waitFor(frame => frame.id === "commands")).data.commands;
+    assert(commands.some((command: any) => command.name === "remote-reload"));
+    assert(!commands.some((command: any) => ["reload", "paseo-reload"].includes(command.name)));
+    child.stdin.write('{"id":"reload","type":"prompt","message":"/remote-reload"}\n');
     await waitFor(frame => frame.type === "extension_ui_request" && frame.message === "Pi runtime reloaded.");
     assert.equal((await waitFor(frame => frame.id === "reload")).success, true);
     child.stdin.write('{"id":"after","type":"get_state"}\n');

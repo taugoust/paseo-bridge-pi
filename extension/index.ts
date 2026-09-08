@@ -657,6 +657,9 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
 
   async function handlePrompt(cmd: any): Promise<void> {
     const message: string = typeof cmd.message === "string" ? cmd.message : "";
+    if (/^\/reload(?:\s|$)/.test(message.trim())) {
+      throw new Error("Unsupported command: /reload is terminal-only. Use /remote-reload to reload Pi from Paseo while idle.");
+    }
     if (isRuntimeReloadCommand(message)) {
       validateReloadPrompt(message, cmd.images);
       requireIdleReload(latestCtx, { reloading: reloadRequested, compacting: isCompacting,
@@ -665,7 +668,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       // Acknowledge acceptance before teardown. Completion is emitted by the
       // replacement session_start handler, never through the stale Pi API.
       send(success(cmd.id, "prompt", { agentInvoked: false, reloadAccepted: true }));
-      try { pi.sendUserMessage("/paseo-reload", { expandPromptTemplates: true }); }
+      try { pi.sendUserMessage("/remote-reload", { expandPromptTemplates: true }); }
       catch (error) {
         reloadRequested = false;
         notifyEvent(`Pi runtime reload failed: ${String(error).slice(0, 2000)}`);
@@ -1183,7 +1186,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   });
 
   const reloadRuntime = async (args: string, ctx: ExtensionCommandContext) => {
-    validateReloadPrompt(`/paseo-reload ${args}`);
+    validateReloadPrompt(`/remote-reload ${args}`);
     requireIdleReload(ctx, { reloading: reloadExecuting, compacting: isCompacting,
       pendingUi: pendingRemoteUiRequests.size > 0, pendingRpc: commandsInFlight > (reloadRequested ? 1 : 0) });
     reloadRequested = true;
@@ -1202,12 +1205,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       throw error;
     }
   };
-  for (const name of ["reload", "paseo-reload"]) {
-    pi.registerCommand(name, {
-      description: "Reload Pi extensions and resources while idle, without restarting Pi or cancelling background jobs",
-      handler: reloadRuntime,
-    });
-  }
+  pi.registerCommand("remote-reload", {
+    description: "Reload Pi extensions and resources while idle, without restarting Pi or cancelling background jobs",
+    handler: reloadRuntime,
+  });
 
   pi.registerCommand("paseo-bridge", {
     description: "Manage the Paseo bridge: install | uninstall | auto [on|off] | connect | disconnect | status",
