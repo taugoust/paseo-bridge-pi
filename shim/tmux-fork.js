@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { parseTmuxTarget, validateTmuxTarget } from "./tmux-target.js";
+import { assertNoLiveRuntimeOwner } from "./runtime-registry.js";
 
 const DEFAULT_FORK_START_TIMEOUT_MS = 120_000;
 const MAX_FORK_START_TIMEOUT_MS = 600_000;
@@ -56,6 +58,7 @@ export function findForkRuntimeRecord(agentId) {
   return readRuntimeRecords().find(
     (record) => record.agentId === agentId
       && record.forkCreated === true
+      && record.managed !== true && !record.runtimeId
       && typeof record.sessionFile === "string"
       && typeof record.tmuxPane === "string",
   ) ?? null;
@@ -143,6 +146,8 @@ export function buildTuiShellCommand(input) {
     PI_PASEO_EXISTING_AGENT_ID: input.agentId,
     PI_PASEO_AGENT_SOCKET: input.socketPath,
     PI_PASEO_BRIDGE_NO_IMPORT: "1",
+    PI_PASEO_FORK_CREATED: input.forkCreated === false ? "0" : "1",
+    ...(input.target ? { PI_PASEO_TMUX_TARGET: JSON.stringify(input.target) } : {}),
   };
   const words = ["env"];
   for (const [name, value] of Object.entries(env)) words.push(`${name}=${shellQuote(value)}`);
@@ -153,7 +158,10 @@ export function buildTuiShellCommand(input) {
 export function launchForkTui(input, options = {}) {
   const run = options.spawnSync ?? spawnSync;
   const sourcePane = input.sourcePane ?? findSourcePane(input.sourceSessionFile, options);
+  const target = input.target ?? parseTmuxTarget();
+  if (target) validateTmuxTarget(target, options);
   const socketPath = input.socketPath ?? pipePathForAgent(input.agentId);
+  assertNoLiveRuntimeOwner(input.forkSessionFile, { agentId: input.agentId });
   try {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     fs.unlinkSync(socketPath);
@@ -165,9 +173,14 @@ export function launchForkTui(input, options = {}) {
     socketPath,
     tuiBin: input.tuiBin,
     tuiArgs: buildTuiArgs(input.rpcArgs, input.forkSessionFile),
+    forkCreated: input.forkCreated,
+    target,
   });
-  const socketArgs = sourcePane.socketPath ? ["-S", sourcePane.socketPath] : [];
-  const args = input.placement === "pane"
+  const tmuxSocket = target?.tmuxSocket ?? sourcePane.socketPath;
+  const socketArgs = tmuxSocket ? ["-S", tmuxSocket] : [];
+  const args = target
+    ? [...socketArgs, "split-window", "-d", "-P", "-F", "#{pane_id}", "-t", `${target.tmuxSessionId}:${target.tmuxWindowId}`, "-c", input.cwd, command]
+    : input.placement === "pane"
     ? [...socketArgs, "split-window", "-d", "-P", "-F", "#{pane_id}", "-t", sourcePane.windowId, "-c", input.cwd, command]
     : [...socketArgs, "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", `${sourcePane.sessionName}:`, "-c", input.cwd, command];
   const result = run("tmux", args, { encoding: "utf8", timeout: 5_000 });
@@ -175,8 +188,13 @@ export function launchForkTui(input, options = {}) {
     throw new Error(`could not launch forked Pi in tmux: ${(result.stderr || "unknown error").trim()}`);
   }
   const paneId = result.stdout.trim();
-  if (!paneId.startsWith("%")) throw new Error("tmux did not return the forked Pi pane id");
-  return { paneId, socketPath, sourcePane, tmuxSocket: sourcePane.socketPath };
+  if (!/^%\d+$/.test(paneId)) throw new Error("tmux did not return the forked Pi pane id");
+  if (process.platform === "linux") {
+    // Layout is presentation, not launch authority: keep the owned TUI if a
+    // concurrent resize/removal makes this best-effort operation fail.
+    try { run("tmux", [...socketArgs, "select-layout", "-t", paneId, "tiled"], { encoding: "utf8", timeout: 5000 }); } catch {}
+  }
+  return { paneId, socketPath, sourcePane, tmuxSocket };
 }
 
 export function killTmuxPane(paneId, options = {}) {
@@ -187,7 +205,7 @@ export function killTmuxPane(paneId, options = {}) {
 
 export function killForkPaneForAgent(agentId, options = {}) {
   const record = options.runtimeRecord ?? (options.findRuntimeRecord ?? findForkRuntimeRecord)(agentId);
-  if (!record || record.agentId !== agentId || record.forkCreated !== true) return false;
+  if (!record || record.agentId !== agentId || record.forkCreated !== true || record.managed === true || record.runtimeId) return false;
   let pane;
   try {
     pane = findSourcePane(record.sessionFile, { ...options, runtimeRecord: record });

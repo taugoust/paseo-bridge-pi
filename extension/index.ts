@@ -15,7 +15,10 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { assertNoLiveRuntimeOwner, processStartToken, harnessRuntimeMetadata, resolveTmuxIdentity, markPaseoAgentPane, validRuntimeReapingEvent, REAPED_RUNTIME_ERROR } from "../shim/runtime-registry.js";
 import { fileURLToPath } from "node:url";
+import { parseTmuxTarget } from "../shim/tmux-target.js";
+import { paseoImportArgs, importRetryDelay, retryableWorkspaceImportFailure, workspaceIdForPlacement } from "./import-placement.js";
 import { completeSimple } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { BridgeTransport, retainBridgeForReload, takeBridgeAfterReload, discardRetainedBridge } from "./bridge-transport.js";
@@ -266,10 +269,28 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   let reloadExecuting = false;
   let commandsInFlight = 0;
   let lifecycleClosed = false;
+  let placementTimer: ReturnType<typeof setInterval> | undefined;
+  let lastPlacement = "";
+  let lastAgentTag = "";
+  let reapedRuntime: { workerEpoch: string; reapSealedAt: string } | null = null;
+  const runtimeReapingIdentity = {
+    PI_HARNESS_RUNTIME_ID: process.env.PI_HARNESS_RUNTIME_ID,
+    PI_HARNESS_CHILD_ID: process.env.PI_HARNESS_CHILD_ID,
+  };
+  const unsubscribeReaping = pi.events.on("harness-runtime-reaping", (event: any) => {
+    if (process.platform !== "linux" || lifecycleClosed || !validRuntimeReapingEvent(event, runtimeReapingIdentity)) return;
+    const file = currentSessionFile ?? latestCtx?.sessionManager.getSessionFile();
+    if (!file || !latestCtx) return;
+    reapedRuntime ??= { workerEpoch: event.workerEpoch, reapSealedAt: new Date().toISOString() };
+    // Trusted lifecycle notification only: never inject a user/model message.
+    writeRuntimeRecord(file, latestCtx.cwd);
+  });
   let latestCtx: ExtensionContext | null = null;
   let isCompacting = false;
   let autoCompactionEnabled = true;
   const importAttempted = new Set<string>();
+  let importFailures = 0;
+  let importRetryAt = 0;
   let currentAgentId: string | null = null;
   // Values Paseo just applied through the bridge; used to break the echo
   // loop when pushing TUI-side changes back to the daemon.
@@ -707,6 +728,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     const type: string = cmd.type;
     commandsInFlight += 1;
     try {
+      if (reapedRuntime) {
+        send(failure(id, type, REAPED_RUNTIME_ERROR));
+        return;
+      }
       if (reloadRequested) {
         send(failure(id, type, "Pi runtime reload is in progress; retry after it completes."));
         return;
@@ -839,6 +864,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function startServer(sessionFile: string): void {
+    assertNoLiveRuntimeOwner(sessionFile, { ignorePid: process.pid });
     transport = new BridgeTransport(sessionFile, pipePathForSession(sessionFile));
     currentSessionFile = sessionFile;
     bindTransport();
@@ -858,17 +884,40 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       fs.mkdirSync(runtimeRegistryDir, { recursive: true, mode: 0o700 });
       fs.chmodSync(runtimeRegistryDir, 0o700);
       const destination = runtimeRecordFile(sessionFile);
+      try {
+        const existing = JSON.parse(fs.readFileSync(destination, "utf8"));
+        if (existing.lifecycle === "reaped") {
+          reapedRuntime ??= { workerEpoch: existing.workerEpoch, reapSealedAt: existing.reapSealedAt };
+          return; // A reload or late timer must never erase an explicit reap.
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       const temporary = `${destination}.${process.pid}.tmp`;
+      const placement = resolveTmuxIdentity();
+      const target = parseTmuxTarget();
+      const sameProject = target && target.tmuxSocket === placement.tmuxSocket
+        && target.tmuxServerId === placement.tmuxServerId && target.tmuxSessionId === placement.tmuxSessionId;
+      const workspaceId = process.platform === "linux" && (target || process.env.PASEO_TMUX_TOPOLOGY === "1")
+        && placement.tmuxSocket && placement.tmuxServerId && placement.tmuxWindowId
+        ? workspaceIdForPlacement(placement) : null;
       fs.writeFileSync(temporary, `${JSON.stringify({
+        schemaVersion: 2,
+        lifecycle: reapedRuntime ? "reaped" : "active",
+        ...(reapedRuntime ?? {}),
+        projectId: sameProject ? target.projectId : null,
+        workspaceId,
+        tmuxServerId: placement.tmuxServerId ?? null,
+        ...harnessRuntimeMetadata(),
+        processStartToken: processStartToken(),
         sessionFile: path.resolve(sessionFile),
         bridgeSocket: pipePathForSession(sessionFile),
-        agentId: currentAgentId,
+        agentId: currentAgentId ?? (reapedRuntime ? readAgentMap()[agentMapKey(sessionFile)] ?? null : null),
         cwd,
         pid: process.pid,
         tuiKind: process.env.PI_SUPERVISED === "1" ? "supervised" : "unsafe",
-        forkCreated: Boolean(process.env.PI_PASEO_EXISTING_AGENT_ID?.trim()),
-        tmuxPane: process.env.TMUX_PANE?.trim() || markedTmuxPane,
-        tmuxSocket: process.env.TMUX?.split(",", 1)[0]?.trim() || null,
+        forkCreated: process.env.PI_PASEO_FORK_CREATED !== "0" && !process.env.PI_HARNESS_RUNTIME_ID?.trim() && Boolean(process.env.PI_PASEO_EXISTING_AGENT_ID?.trim()),
+        ...placement,
       }, null, 2)}\n`, { mode: 0o600 });
       fs.renameSync(temporary, destination);
     } catch (err) {
@@ -880,7 +929,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     try {
       const destination = runtimeRecordFile(sessionFile);
       const record = JSON.parse(fs.readFileSync(destination, "utf8"));
-      if (record?.pid === process.pid) fs.unlinkSync(destination);
+      if (record?.pid === process.pid && record.lifecycle !== "reaped") fs.unlinkSync(destination);
     } catch {
       // absent, stale, or replaced by a newer owner
     }
@@ -911,8 +960,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     }
   }
 
+  function tagAgentPane(placement = resolveTmuxIdentity()): void {
+    if (process.platform !== "linux" || !currentAgentId || !placement.tmuxPane) return;
+    const key = JSON.stringify([placement.tmuxSocket, placement.tmuxPane, currentAgentId]);
+    if (key !== lastAgentTag && markPaseoAgentPane(placement, currentAgentId)) lastAgentTag = key;
+  }
+
   function adoptAgent(agentId: string, reused: boolean): void {
     currentAgentId = agentId;
+    tagAgentPane();
     if (currentSessionFile && latestCtx) writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
     debugLog(`paseo agent id: ${agentId}${reused ? " (reused)" : ""}`);
     // Align Paseo's cached model/thinking with the TUI's live values. The
@@ -926,7 +982,10 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function registerWithPaseo(sessionFile: string, cwd: string): void {
-    if (importAttempted.has(sessionFile) || lifecycleClosed) return;
+    if (reapedRuntime || importAttempted.has(sessionFile) || lifecycleClosed || Date.now() < importRetryAt) return;
+    // Harness staging panes are real TUIs but not separate Paseo tabs yet.
+    // The placement timer imports them automatically after promotion.
+    if (resolveTmuxIdentity().infrastructure) return;
     const isCurrent = () => !lifecycleClosed && currentSessionFile === sessionFile;
     importAttempted.add(sessionFile);
     const assignedAgentId = process.env.PI_PASEO_EXISTING_AGENT_ID?.trim();
@@ -942,12 +1001,32 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       return;
     }
     const hostArgs = process.env.PASEO_HOST ? ["--host", process.env.PASEO_HOST] : [];
+    const retryImport = () => {
+      const delay = importRetryDelay(++importFailures);
+      if (delay === undefined) {
+        debugLog("workspace import retries exhausted; use /paseo-bridge connect after resolving topology");
+        return;
+      }
+      importRetryAt = Date.now() + delay;
+      importAttempted.delete(sessionFile);
+    };
     const runImport = () => {
-      const args = ["import", "--provider", "pi", sessionFile, "--cwd", cwd, "--json", ...hostArgs];
+      let args: string[];
+      try {
+        args = paseoImportArgs({ sessionFile, cwd, host: process.env.PASEO_HOST,
+          topology: process.platform === "linux" && process.env.PASEO_TMUX_TOPOLOGY === "1", placement: resolveTmuxIdentity() });
+      } catch (error) {
+        debugLog(String(error));
+        retryImport();
+        return;
+      }
       runPaseoCli(cli, args, (code, output) => {
         if (!isCurrent()) return;
         debugLog(`paseo import exited ${code}: ${output.slice(0, 500)}`);
-        if (code !== 0) return;
+        if (code !== 0) {
+          if (process.platform === "linux" && process.env.PASEO_TMUX_TOPOLOGY === "1" && retryableWorkspaceImportFailure(code, output)) retryImport();
+          return;
+        }
         try {
           const jsonStart = output.indexOf("{");
           if (jsonStart === -1) return;
@@ -1007,6 +1086,8 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     }
     writeRuntimeRecord(file, ctx.cwd);
     importAttempted.delete(file);
+    importFailures = 0;
+    importRetryAt = 0;
     registerWithPaseo(file, ctx.cwd);
     return "Connecting session to Paseo...";
   }
@@ -1041,6 +1122,19 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         connectSession(ctx);
       }
       markTmuxPane(true);
+      lastPlacement = JSON.stringify(resolveTmuxIdentity());
+      placementTimer = setInterval(() => {
+        if (lifecycleClosed || !currentSessionFile || !latestCtx) return;
+        const placement = resolveTmuxIdentity();
+        const signature = JSON.stringify(placement);
+        if (signature !== lastPlacement) {
+          lastPlacement = signature;
+          writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
+        }
+        if (!placement.infrastructure && !currentAgentId) registerWithPaseo(currentSessionFile, latestCtx.cwd);
+        tagAgentPane(placement);
+      }, 2000);
+      placementTimer.unref?.();
       if (event.reason === "reload") notifyEvent("Pi runtime reloaded. Background jobs were not cancelled.");
     } catch (err) {
       retained?.transport.close();
@@ -1050,6 +1144,9 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (event) => {
     lifecycleClosed = true;
+    unsubscribeReaping();
+    if (placementTimer) clearInterval(placementTimer);
+    placementTimer = undefined;
     if (event.reason === "reload" && transport) {
       providerReconnect.stop();
       cancelPendingRemoteUiRequests();

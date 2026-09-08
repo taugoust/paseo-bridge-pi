@@ -167,6 +167,7 @@ for development only — the supported install is the pi package flow above.
 | `PI_PASEO_BRIDGE_FORCE=1` | Activate even when pi is not in TUI mode (testing only). |
 | `PASEO_CLI` | Path to the paseo CLI used for registration. |
 | `PASEO_HOST` | Forwarded to `paseo import --host`. |
+| `PASEO_TMUX_TOPOLOGY=1` | Linux: import into the deterministic workspace for the current native tmux window using `--workspace-id`. |
 | `PI_REAL_BIN` | Shim: path to the real pi binary (or its `cli.js`). |
 | `PI_PASEO_TUI_BIN` | Supervised interactive `pi` launcher used for forks whose source session is supervised. |
 | `PI_PASEO_UNSAFE_TUI_BIN` | Interactive `pi-unsafe` launcher used for forks whose source session is unsafe. When neither TUI launcher is configured, Paseo keeps its native text-history fork behavior. |
@@ -185,6 +186,94 @@ The fork is created when the draft is submitted, not when the Fork menu item is 
 Source and boundary resolution is deliberately fail-closed. The source title, cwd, and terminal assistant text must resolve to exactly one bridged session entry. Histories ending at an assistant response retain that exact checkpoint, even if the source has progressed. Whole-agent histories with trailing tool entries use that exact assistant text as an anchor: it must be unique and an ancestor of the **current native branch at submission**. The bridge reads the running session's cursor through a separate read-only socket (without disconnecting Paseo), then snapshots its JSONL ancestry; it never selects the last historical entry or an unrelated branch. Later source activity is not included. Older source bridges without the snapshot endpoint must be updated before these forks can resolve.
 
 If the native context ends midway through a tool-call batch, the snapshot rolls back only that unfinished assistant batch and its partial results, preserving earlier completed tool turns. The shim reports this trim on stderr. No tool results are invented and no source tools are restarted. Invalid tool context, missing anchors, and ambiguous or stale matches return an error rather than guessing. The source session is never rewritten. Conversation state is forked, but both agents continue to share the current filesystem.
+
+## Harness-owned interactive children
+
+A harness-owned child uses the normal **interactive Pi TUI bridge**, not a second
+RPC Pi or a terminal-console agent. The harness's control extension uses its own
+socket; Paseo retains the bridge's single controller socket. Completing a turn
+leaves the TUI alive and idle. Harness children are excluded from the legacy
+fork-archive pane cleanup: hiding, archiving, or disconnecting Paseo must not reap
+them. Explicit pane reaping remains the harness's responsibility.
+
+Trusted launchers may supply `PI_HARNESS_RUNTIME_ID`,
+`PI_HARNESS_PARENT_SESSION_ID`, `PI_HARNESS_TASK_ID`, `PI_HARNESS_GROUP_ID`,
+`PI_HARNESS_CHILD_ID`, `PI_HARNESS_ATTEMPT`, and `PI_HARNESS_CONTROL_SOCKET`.
+The bridge publishes only these allowlisted harness fields (never control tokens)
+in its private version-2 runtime records. Records also carry a Linux boot/start
+identity when available and resolved `tmuxSocket`, `tmuxSessionId`,
+`tmuxWindowId`, and `tmuxPane` IDs. A pane tagged `@pi_infrastructure 1` is not
+imported. Every two seconds the bridge checks placement: clearing that tag imports
+the existing TUI automatically, and moving the pane refreshes its native IDs.
+Staging launchers must not set `PI_PASEO_BRIDGE_NO_IMPORT`, which remains an
+unconditional operator override.
+
+On Linux with `PASEO_TMUX_TOPOLOGY=1`, every import resolves the live pane's
+canonical socket path, server incarnation, and window ID and sends
+`--workspace-id wks_tmux_<hash>`. The hash is the first 24 hex characters of
+SHA-256 over `JSON.stringify([socket, serverId, windowId])`, matching the server.
+Inherited `PI_PASEO_TMUX_TARGET` is not used for import placement after moving a
+pane. Workspace/projection rejections retry up to five times with bounded backoff,
+even if the pane does not move again; each retry resolves live placement anew.
+Missing native identity fails closed instead of importing into an inferred
+workspace. Successful-but-ambiguous responses are not retried automatically.
+Immediately after import/adoption, the bridge tags the actual pane with
+`@paseo_agent_id`, allowing the server to suppress a duplicate terminal entry and
+relocate the same agent when its pane moves.
+
+The shim discovers recorded bridge endpoints and refuses to spawn another Pi
+when a matching runtime process may still be alive, even if its socket is
+unavailable. It does not delete sockets on connection failure. Old records
+without process-start identity and stale managed ownership are treated
+conservatively. This protects shim fallback; it is not a system-wide session lock
+against independently launched Pi processes. Ordinary `session_shutdown` removes
+the registry entry; completion, disconnect, generic quit, and failure do not
+create reaped tombstones.
+
+For an irrevocably sealed explicit reap, the trusted harness control extension
+emits `pi.events.emit("harness-runtime-reaping", { runtimeId, childId, workerEpoch })`
+before shutdown. The bridge matches runtime/child IDs against its captured trusted
+`PI_HARNESS_*` launch identity and validates the public worker epoch. It preserves
+an atomic registry tombstone with `lifecycle: "reaped"`, `workerEpoch`, and
+`reapSealedAt`, even after `session_shutdown`. No model message is injected.
+Existing bridge commands and subsequent shim reconnections receive an explicit
+reaped-runtime error instead of attaching or starting a replacement Pi. A reload
+or placement refresh cannot erase the tombstone. The harness still owns graceful
+Pi shutdown and verified pane removal: this retirement marker is not independent
+proof that those resources have already exited. Continuation requires a new
+runtime/session, not automatic revival of the retired one.
+
+### Server-directed topology
+
+The provider may supply `PI_PASEO_TMUX_TARGET` as JSON:
+
+```json
+{"version":1,"tmuxSocket":"/run/user/1000/tmux.sock","tmuxServerId":"123:456:789","tmuxSessionId":"$1","tmuxWindowId":"@2","projectId":"project-id","workspaceId":"workspace-id"}
+```
+
+The server owns project → tmux session and workspace → tmux window mappings.
+Before allocating a pane, the shim verifies the tmux server's PID/start-time/socket
+inode identity and verifies that the exact window belongs to the exact session.
+Current incarnation validation uses Linux `/proc` and fails closed elsewhere.
+Placement never uses cwd or tmux display names. Both root agents and history forks
+allocate a pane in the supplied window, overriding legacy source-window placement.
+After allocation, Linux launches best-effort tile the new pane's window so repeated
+splits do not continually halve the same pane. A layout failure does not invalidate
+or kill an otherwise successfully launched TUI.
+
+Roots require `PI_PASEO_ROOT_TUI_KIND=unsafe` and
+`PI_PASEO_UNSAFE_TUI_BIN` pointing to the trusted fresh interactive launcher.
+With a topology target there is **no raw RPC fallback**. Provider metadata comes
+from an actual idle bootstrap TUI. If the first prompt contains a native fork,
+the shim verifies and closes that unused bootstrap pane, waits for its Pi process
+to exit, then starts the real branch with the source-trust-matched launcher. No
+source session is rewritten, and attachment-only forks stay idle. The launcher
+receives the existing Paseo agent ID, so no second terminal agent is imported.
+
+Topology allocation uses exclusive per-agent launch claims. A launcher crash or
+uncertain startup leaves a claim in `~/.pi/paseo-bridge/launches`; do not remove it
+until the pane/process is reconciled. A successful bridge connection releases the
+claim. Provider disconnect or daemon restart does not close the underlying TUI.
 
 ## Quiet supervisor activity
 

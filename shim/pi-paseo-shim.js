@@ -9,6 +9,9 @@ import os from "node:os";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { assertNoLiveRuntimeOwner, assertRuntimeNotReaped, matchingRuntimeRecords } from "./runtime-registry.js";
+import { parseTmuxTarget } from "./tmux-target.js";
+import { topologyRelay } from "./topology-relay.js";
 import { createForkedSession, resolveForkPlan } from "./fork-support.js";
 import { startForkArchiveMonitor } from "./fork-lifecycle.js";
 import {
@@ -347,10 +350,14 @@ function forkAwarePassthrough() {
 }
 
 async function main() {
-  const sessionFile = extractSessionArg(args);
+  let sessionFile = extractSessionArg(args);
+  const assignedAgentId = process.env.PASEO_AGENT_ID?.trim();
+  const runtimeRecords = matchingRuntimeRecords(sessionFile, assignedAgentId);
+  assertRuntimeNotReaped(runtimeRecords);
+  if (!sessionFile && runtimeRecords.length) sessionFile = runtimeRecords[0].sessionFile;
   if (sessionFile) {
-    const assignedAgentId = process.env.PASEO_AGENT_ID?.trim();
     const candidatePaths = [
+      ...runtimeRecords.filter(record => typeof record.bridgeSocket === "string").map(record => record.bridgeSocket),
       ...(assignedAgentId ? [pipePathForAgent(assignedAgentId)] : []),
       pipePathForSession(sessionFile),
     ];
@@ -360,17 +367,21 @@ async function main() {
         bridge(socket, sessionFile, assignedAgentId);
         return;
       }
-      if (process.platform !== "win32") {
-        // A socket file that refuses connections is stale from a crash.
-        try {
-          fs.unlinkSync(pipePath);
-        } catch {
-          // absent or not ours - nothing to clean
-        }
-      }
     }
+    // A failed connection can mean startup/reload, permissions, or a live
+    // managed runtime whose bridge is down. Never unlink another owner's
+    // endpoint or mistake transport failure for permission to spawn a writer.
+    assertNoLiveRuntimeOwner(sessionFile, { agentId: assignedAgentId, records: runtimeRecords });
+  }
+  const target = parseTmuxTarget();
+  if (target) {
+    await topologyRelay({ target, args, sessionFile, waitForSocket });
+    return;
   }
   forkAwarePassthrough();
 }
 
-main();
+main().catch(error => {
+  process.stderr.write(`pi-paseo-shim: ${String(error.message ?? error)}\n`);
+  process.exitCode = 1;
+});

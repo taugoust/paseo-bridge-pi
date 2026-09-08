@@ -47,7 +47,7 @@ test("buildTuiShellCommand quotes fixed environment and arguments", () => {
       tuiBin: "/run/current system/pi",
       tuiArgs: ["--session", "/tmp/it's.jsonl"],
     }),
-    "env PI_PASEO_EXISTING_AGENT_ID='agent-1' PI_PASEO_AGENT_SOCKET='/run/user/1000/pi-paseo/agent-1.sock' PI_PASEO_BRIDGE_NO_IMPORT='1' '/run/current system/pi' '--session' '/tmp/it'\\''s.jsonl'",
+    "env PI_PASEO_EXISTING_AGENT_ID='agent-1' PI_PASEO_AGENT_SOCKET='/run/user/1000/pi-paseo/agent-1.sock' PI_PASEO_BRIDGE_NO_IMPORT='1' PI_PASEO_FORK_CREATED='1' '/run/current system/pi' '--session' '/tmp/it'\\''s.jsonl'",
   );
 });
 
@@ -161,12 +161,14 @@ test("launchForkTui maps same workspaces to a split in the source window", () =>
   const args = calls[0][1] as string[];
   assert.deepEqual(args.slice(0, 10), ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "@2", "-c", "/repo", args[9]]);
   assert.match(args[9], /--session.*fork\.jsonl/);
+  if (process.platform === "linux") assert.deepEqual(calls[1], ["tmux", ["select-layout", "-t", "%9", "tiled"]]);
 });
 
 test("launchForkTui maps new workspaces to a new window in the source session", () => {
   const calls: unknown[][] = [];
   const spawnSync = (command: string, args: string[]) => {
     calls.push([command, args]);
+    if (args.includes("select-layout")) throw new Error("layout unavailable");
     return { status: 0, stdout: "%10\n", stderr: "" };
   };
   launchForkTui({
