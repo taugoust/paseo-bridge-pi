@@ -1,7 +1,14 @@
 import * as net from "node:net";
+import { randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import {
+  decodePermissionGateOperatorFrame,
+  handlePermissionGateOperatorRequest,
+  permissionGateOperatorSocketPath,
+  type PermissionGateOperatorIdentityV1,
+} from "./permission-gate-operator.js";
 
 type Callbacks = {
   command(value: any): Promise<void>;
@@ -9,18 +16,27 @@ type Callbacks = {
   attached(): void;
   detached(): void;
   error(error: unknown): void;
+  permissionGateOperator?(): PermissionGateOperatorIdentityV1 | undefined;
 };
 
 /** Socket ownership is independent of the replaceable extension context. */
 export class BridgeTransport {
   private server: net.Server | null = null;
   private snapshotServer: net.Server | null = null;
+  private operatorServer: net.Server | null = null;
+  private operatorSockets = new Set<net.Socket>();
   private client: net.Socket | null = null;
   private callbacks?: Callbacks;
   private closed = false;
 
   readonly sessionFile: string;
   readonly pipePath: string;
+  /** Local-trust runtime capability; not a boundary against same-UID code. */
+  private _operatorCapability?: string;
+  private _operatorEpoch?: string;
+  get operatorCapability(): string { return this._operatorCapability ??= randomBytes(32).toString("hex"); }
+  get operatorEpoch(): string { return this._operatorEpoch ??= randomUUID(); }
+  rotateOperatorEpoch(): void { this._operatorEpoch = randomUUID(); }
 
   constructor(sessionFile: string, pipePath: string) {
     this.sessionFile = sessionFile;
@@ -30,8 +46,12 @@ export class BridgeTransport {
   get connected(): boolean { return Boolean(this.client && !this.client.destroyed); }
 
   bind(callbacks: Callbacks): void {
+    this.rotateOperatorEpoch();
     this.callbacks = callbacks;
-    if (this.server) this.ensureForkSnapshotEndpoint();
+    if (this.server) {
+      this.ensureForkSnapshotEndpoint();
+      this.ensureOperatorEndpoint();
+    }
     if (this.connected) callbacks.attached();
   }
 
@@ -43,11 +63,55 @@ export class BridgeTransport {
       try { fs.unlinkSync(this.pipePath); } catch {}
     }
     this.ensureForkSnapshotEndpoint();
+    this.ensureOperatorEndpoint();
     this.server = net.createServer((socket) => this.attach(socket));
     this.server.on("error", (error) => this.callbacks?.error(error));
     this.server.listen(this.pipePath, () => {
       if (process.platform !== "win32") {
         try { fs.chmodSync(this.pipePath, 0o600); } catch {}
+      }
+    });
+  }
+
+  private ensureOperatorEndpoint(): void {
+    if (this.operatorServer || this.closed) return;
+    const operatorPath = permissionGateOperatorSocketPath(this.pipePath);
+    if (process.platform !== "win32") {
+      try { fs.unlinkSync(operatorPath); } catch {}
+    }
+    this.operatorServer = net.createServer((socket) => {
+      if (this.operatorSockets.size >= 16 || this.closed) { socket.destroy(); return; }
+      this.operatorSockets.add(socket);
+      socket.on("close", () => this.operatorSockets.delete(socket));
+      socket.on("error", (error) => this.callbacks?.error(error));
+      socket.setTimeout(5_000, () => socket.destroy());
+      let buffer = Buffer.alloc(0);
+      let received = false;
+      socket.on("data", (chunk: Buffer) => {
+        if (received || buffer.length + chunk.length > 4097) { socket.destroy(); return; }
+        buffer = Buffer.concat([buffer, chunk]);
+        const newline = buffer.indexOf(0x0a);
+        if (newline < 0) return;
+        received = true;
+        if (newline === 0 || newline > 4096 || newline !== buffer.length - 1) { socket.destroy(); return; }
+        let response: Record<string, unknown>;
+        try {
+          const request = decodePermissionGateOperatorFrame(buffer.subarray(0, newline));
+          const identity = this.callbacks?.permissionGateOperator?.();
+          response = identity
+            ? handlePermissionGateOperatorRequest(request, identity)
+            : { v: 1, type: "permission_gate_mode", id: null, success: false, error: "Permission-gate operator unavailable" };
+        } catch (error) {
+          response = { v: 1, type: "permission_gate_mode", id: null, success: false,
+            error: error instanceof Error ? error.message.slice(0, 500) : "Invalid permission-gate operator frame" };
+        }
+        socket.end(`${JSON.stringify(response)}\n`);
+      });
+    });
+    this.operatorServer.on("error", (error) => this.callbacks?.error(error));
+    this.operatorServer.listen(operatorPath, () => {
+      if (process.platform !== "win32") {
+        try { fs.chmodSync(operatorPath, 0o600); } catch {}
       }
     });
   }
@@ -92,9 +156,14 @@ export class BridgeTransport {
     this.server = null;
     this.snapshotServer?.close();
     this.snapshotServer = null;
+    this.operatorServer?.close();
+    this.operatorServer = null;
+    for (const socket of this.operatorSockets) socket.destroy();
+    this.operatorSockets.clear();
     if (process.platform !== "win32") {
       try { fs.unlinkSync(this.pipePath); } catch {}
       try { fs.unlinkSync(`${this.pipePath}.fork`); } catch {}
+      try { fs.unlinkSync(permissionGateOperatorSocketPath(this.pipePath)); } catch {}
     }
   }
 

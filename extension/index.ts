@@ -22,6 +22,13 @@ import { paseoImportArgs, importRetryDelay, retryableWorkspaceImportFailure, wor
 import { completeSimple } from "@earendil-works/pi-ai";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { BridgeTransport, retainBridgeForReload, takeBridgeAfterReload, discardRetainedBridge } from "./bridge-transport.js";
+import {
+  permissionGateOperatorSocketPath,
+  removePermissionGateOperatorDescriptor,
+  writePermissionGateOperatorDescriptor,
+  type PermissionGateOperatorDescriptorV1,
+  type PermissionGateOperatorIdentityV1,
+} from "./permission-gate-operator.js";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
@@ -832,9 +839,76 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     }
   }
 
+  function activePermissionGateOperatorDescriptor(): PermissionGateOperatorDescriptorV1 | undefined {
+    const activeTransport = transport;
+    const ctx = latestCtx;
+    const agentId = currentAgentId;
+    if (!activeTransport || !activeTransport.connected || !ctx || !agentId || currentSessionFile !== activeTransport.sessionFile) return undefined;
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (typeof sessionId !== "string" || !sessionId) return undefined;
+    return {
+      version: 1,
+      socketPath: permissionGateOperatorSocketPath(activeTransport.pipePath),
+      capability: activeTransport.operatorCapability,
+      agentId,
+      sessionId,
+      runtimeEpoch: activeTransport.operatorEpoch,
+    };
+  }
+
+  function publishPermissionGateOperatorDescriptor(): void {
+    const descriptor = activePermissionGateOperatorDescriptor();
+    if (!descriptor) {
+      revokePermissionGateOperatorDescriptor();
+      return;
+    }
+    try {
+      const service = (globalThis as Record<string, any>).__PAE_PERMISSION_GATE_OPERATOR_V1__;
+      if (service?.version !== 1 || typeof service.status !== "function") {
+        revokePermissionGateOperatorDescriptor();
+        return;
+      }
+      const mode = service.status(descriptor.sessionId);
+      if (mode?.sessionId !== descriptor.sessionId || typeof mode.enabled !== "boolean") {
+        revokePermissionGateOperatorDescriptor();
+        return;
+      }
+      writePermissionGateOperatorDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), descriptor);
+    } catch {
+      // Missing/stale/non-guard authority must not leave an operator descriptor available.
+      revokePermissionGateOperatorDescriptor();
+    }
+  }
+
+  function revokePermissionGateOperatorDescriptor(): void {
+    if (!transport || !currentAgentId) return;
+    removePermissionGateOperatorDescriptor(
+      path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch,
+    );
+  }
+
   function bindTransport(): void {
     transport?.bind({
       command: handleCommand,
+      permissionGateOperator() {
+        const descriptor = activePermissionGateOperatorDescriptor();
+        const activeTransport = transport;
+        const ctx = latestCtx;
+        const agentId = currentAgentId;
+        if (!descriptor || !activeTransport || !ctx || !agentId) return undefined;
+        const identity: PermissionGateOperatorIdentityV1 = {
+          descriptor,
+          authority() {
+            if (transport !== activeTransport || latestCtx !== ctx || currentAgentId !== agentId
+              || currentSessionFile !== activeTransport.sessionFile || !activeTransport.connected
+              || ctx.sessionManager.getSessionId() !== descriptor.sessionId) return undefined;
+            const service = (globalThis as Record<string, any>).__PAE_PERMISSION_GATE_OPERATOR_V1__;
+            if (service?.version !== 1 || typeof service.status !== "function" || typeof service.applyMode !== "function") return undefined;
+            return service;
+          },
+        };
+        return identity;
+      },
       forkSnapshot() {
         const sm = latestCtx?.sessionManager;
         if (!sm || reloadRequested) throw new Error("Native session snapshot unavailable");
@@ -853,12 +927,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         };
       },
       attached() {
+        publishPermissionGateOperatorDescriptor();
         providerReconnect.connected();
         debugLog("client connected");
         notifyTui("Paseo attached to this session");
         emitEntryCapture(latestCtx, "session_start");
       },
       detached() {
+        revokePermissionGateOperatorDescriptor();
+        transport?.rotateOperatorEpoch();
         cancelPendingRemoteUiRequests();
         providerReconnect.trigger();
         debugLog("client disconnected");
@@ -868,6 +945,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function stopServer(): void {
+    revokePermissionGateOperatorDescriptor();
     providerReconnect.stop();
     cancelPendingRemoteUiRequests();
     transport?.close();
@@ -986,7 +1064,13 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   function adoptAgent(agentId: string, reused: boolean): void {
+    if (currentAgentId && currentAgentId !== agentId && transport) {
+      removePermissionGateOperatorDescriptor(
+        path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch,
+      );
+    }
     currentAgentId = agentId;
+    publishPermissionGateOperatorDescriptor();
     tagAgentPane();
     if (currentSessionFile && latestCtx) writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
     debugLog(`paseo agent id: ${agentId}${reused ? " (reused)" : ""}`);
@@ -1150,6 +1234,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           lastPlacement = signature;
           writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
         }
+        publishPermissionGateOperatorDescriptor();
         if (!placement.infrastructure && !currentAgentId) registerWithPaseo(currentSessionFile, latestCtx.cwd);
         tagAgentPane(placement);
       }, 2000);
@@ -1167,6 +1252,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     if (placementTimer) clearInterval(placementTimer);
     placementTimer = undefined;
     if (event.reason === "reload" && transport) {
+      revokePermissionGateOperatorDescriptor();
       providerReconnect.stop();
       cancelPendingRemoteUiRequests();
       retainBridgeForReload(transport, currentAgentId, titleAttempted);

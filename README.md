@@ -97,6 +97,76 @@ remote command is available, so the first upgrade still needs a terminal reload
 or a fresh Pi session. No terminal keystrokes or model prompts are used to emulate
 built-in commands.
 
+## Permission prompt button in Paseo
+
+The optional [Permission Gate plugin](plugin/README.md) adds a **Prompts · On/Off**
+control to each active Pi agent's composer. It uses the operator API below rather
+than sending slash commands, so it does not interrupt the chat or current turn.
+Paseo 0.10 or newer and this updated bridge must be loaded. Install the plugin on
+the daemon host, as the same user running Pi:
+
+```sh
+paseo plugin install github:taugoust/paseo-bridge-pi --path plugin
+```
+
+No custom desktop/mobile app build is needed. The backend currently targets
+Unix daemon hosts. Only live, bridged, guard-only Permission Gate sessions are
+controllable; other Pi sessions show an unavailable state. Existing slash-command
+submission behavior is unchanged.
+
+## Permission prompt mode operator API
+
+Paseo plugins may expose an agent-specific control for AgentSH Permission Gate
+prompt mode. This API is available only while the current attached Pi session
+has the existing guard-only Permission Gate operator service; it changes prompt
+mode only and never sends a prompt, slash command, abort, or turn-control request.
+The gate's authorization remains mandatory when prompts are disabled.
+
+For a Paseo agent ID, read the private descriptor at
+`~/.pi/paseo-bridge/operators/<sha256(agentId)>.json`, where the filename is the
+lowercase hex SHA-256 of the UTF-8 agent ID. The descriptor directory is mode
+`0700`, the descriptor is mode `0600`, and its fields are exactly:
+
+```json
+{
+  "version": 1,
+  "socketPath": "/path/to/bridge.sock.operator",
+  "capability": "<64 lowercase hex characters>",
+  "agentId": "<exact Paseo agent ID>",
+  "sessionId": "<exact Pi session ID>",
+  "runtimeEpoch": "<current bridge runtime UUID>"
+}
+```
+
+Connect to `socketPath`, send one UTF-8 JSONL request (maximum 4096 bytes before
+newline), then read one JSONL response and close the connection. Each request
+uses a new connection. Status:
+
+```json
+{"v":1,"type":"permission_gate_mode","id":"request-1","capability":"...","agentId":"...","sessionId":"...","runtimeEpoch":"...","action":"status"}
+```
+
+Set mode by adding `"action":"set","enabled":true` (or `false`). Success:
+
+```json
+{"v":1,"type":"permission_gate_mode","id":"request-1","success":true,"data":{"agentId":"...","sessionId":"...","runtimeEpoch":"...","enabled":true}}
+```
+
+Failure uses the same envelope with `"success":false,"error":"..."`. The
+plugin must use the descriptor's exact identity fields, discard stale descriptors,
+and treat a missing descriptor or any error as unavailable. The descriptor is
+removed when the Paseo controller disconnects or the Pi runtime shuts down;
+`runtimeEpoch` rotates on disconnect/reload so retained requests become stale.
+It is not part of public bridge RPC state or the runtime registry record.
+
+**Trust limitation:** this is a trusted-local desktop integration, not an OS
+security boundary. The capability and socket are protected against accidental
+cross-session use and stale requests, but malicious same-UID code (including
+model-executed shell in `pi-unsafe`) can read the descriptor or contact the
+socket. Do not describe mode `0600` as protecting it from same-UID code. This
+operator surface is not a model-callable tool and must remain in the trusted
+Paseo plugin/backend path.
+
 ## How it works
 
 Two components:

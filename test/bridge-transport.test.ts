@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BridgeTransport, retainBridgeForReload, takeBridgeAfterReload, discardRetainedBridge } from "../extension/bridge-transport.ts";
+import { permissionGateOperatorSocketPath } from "../extension/permission-gate-operator.js";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "pi-bridge-reload-"));
@@ -48,6 +49,7 @@ test("same-session reload retains the socket and routes subsequent commands only
   try {
     f.client.write('{"id":1,"type":"get_state"}\n');
     assert.equal((await f.response(1)).owner, "old");
+    const previousOperatorEpoch = f.transport.operatorEpoch;
     retainBridgeForReload(f.transport, "existing-agent", true);
     f.client.write('{"id":2,"type":"prompt","message":"do not dispatch during reload"}\n');
     assert.equal((await f.response(2)).success, false);
@@ -57,6 +59,7 @@ test("same-session reload retains the socket and routes subsequent commands only
     assert.equal(retained?.agentId, "existing-agent");
     assert.equal(retained?.titleAttempted, true);
     f.transport.bind({ command: async cmd => { f.transport.send({ id: cmd.id, owner: "new", text: cmd.message }); }, attached() {}, detached() {}, error: error => f.errors.push(error) });
+    assert.notEqual(f.transport.operatorEpoch, previousOperatorEpoch, "reload rotates operator runtime epoch");
     const frame = Buffer.from('{"id":3,"type":"prompt","message":"🌍"}\n');
     const offset = frame.indexOf(Buffer.from("🌍"));
     f.client.write(frame.subarray(0, offset + 1));
@@ -143,6 +146,139 @@ test("read-only native fork snapshot works while Paseo controller remains attach
     f.client.write('{"id":99,"type":"get_state"}\n');
     assert.equal((await f.response(99)).owner, "controller");
     assert.deepEqual(f.errors, []);
+  } finally { await f.close(); }
+});
+
+test("separate permission-gate operator socket is narrow and leaves bridge controller untouched", async () => {
+  const f = await fixture();
+  try {
+    const capability = "a".repeat(64);
+    let epoch = "";
+    let enabled = true;
+    let activeRun = true;
+    let commandCalls = 0;
+    f.transport.bind({
+      command: async cmd => { commandCalls++; f.transport.send({ id: cmd.id, owner: "controller" }); },
+      permissionGateOperator: () => ({
+        descriptor: { version: 1, socketPath: permissionGateOperatorSocketPath(f.socketPath), capability,
+          agentId: "agent-1", sessionId: "session-1", runtimeEpoch: epoch },
+        authority: () => ({
+          status: sessionId => ({ sessionId, enabled }),
+          applyMode: (sessionId, next) => {
+            assert.equal(activeRun, true, "operator works while an agent run is active");
+            enabled = next;
+            return { sessionId, enabled };
+          },
+        }),
+      }),
+      attached() {}, detached() {}, error: error => f.errors.push(error),
+    });
+    epoch = f.transport.operatorEpoch;
+    const operator = net.connect(permissionGateOperatorSocketPath(f.socketPath));
+    await once(operator, "connect");
+    const responsePromise = once(operator, "data");
+    operator.write(`${JSON.stringify({ v: 1, type: "permission_gate_mode", id: "test-1", capability,
+      agentId: "agent-1", sessionId: "session-1", runtimeEpoch: epoch, action: "set", enabled: false })}\n`);
+    const [data] = await responsePromise;
+    assert.deepEqual(JSON.parse(data.toString()), {
+      v: 1, type: "permission_gate_mode", id: "test-1", success: true,
+      data: { agentId: "agent-1", sessionId: "session-1", runtimeEpoch: epoch, enabled: false },
+    });
+    assert.equal(enabled, false);
+    assert.equal(commandCalls, 0, "operator action did not dispatch a bridge command");
+    assert.equal(f.transport.connected, true);
+    f.client.write('{"id":102,"type":"get_state"}\n');
+    assert.equal((await f.response(102)).owner, "controller");
+    assert.equal(commandCalls, 1, "control spy observes only the separately submitted main RPC");
+    activeRun = false;
+    assert.deepEqual(f.errors, []);
+  } finally { await f.close(); }
+});
+
+test("operator rejects stale requests across suspend, rebind, and controller disconnect", async () => {
+  const f = await fixture();
+  const capability = "c".repeat(64);
+  let enabled = true;
+  let commandCalls = 0;
+  const bind = () => {
+    f.transport.bind({
+      command: async cmd => { commandCalls++; f.transport.send({ id: cmd.id }); },
+      permissionGateOperator: () => {
+        if (!f.transport.connected) return undefined;
+        const epoch = f.transport.operatorEpoch;
+        return {
+          descriptor: { version: 1 as const, socketPath: permissionGateOperatorSocketPath(f.socketPath), capability,
+            agentId: "agent-1", sessionId: "session-1", runtimeEpoch: epoch },
+          authority: () => ({
+            status: (sessionId: string) => ({ sessionId, enabled }),
+            applyMode: (sessionId: string, next: boolean) => ({ sessionId, enabled: (enabled = next) }),
+          }),
+        };
+      },
+      attached() {},
+      detached() { f.transport.rotateOperatorEpoch(); },
+      error: error => f.errors.push(error),
+    });
+  };
+  try {
+    bind();
+    const initialEpoch = f.transport.operatorEpoch;
+    const staleRequest = { v: 1, type: "permission_gate_mode", id: "old", capability, agentId: "agent-1",
+      sessionId: "session-1", runtimeEpoch: initialEpoch, action: "status" };
+    retainBridgeForReload(f.transport, "agent-1", false);
+    const suspended = net.connect(permissionGateOperatorSocketPath(f.socketPath));
+    await once(suspended, "connect");
+    const suspendedReply = once(suspended, "data");
+    suspended.write(`${JSON.stringify(staleRequest)}\n`);
+    assert.equal(JSON.parse((await suspendedReply)[0].toString()).success, false);
+
+    assert.ok(takeBridgeAfterReload("same-session"));
+    bind();
+    assert.notEqual(f.transport.operatorEpoch, initialEpoch);
+    const afterReload = net.connect(permissionGateOperatorSocketPath(f.socketPath));
+    await once(afterReload, "connect");
+    const staleReply = once(afterReload, "data");
+    afterReload.end(`${JSON.stringify(staleRequest)}\n`);
+    assert.equal(JSON.parse((await staleReply)[0].toString()).success, false);
+
+    f.client.destroy();
+    await waitForTransportDisconnect(f.transport);
+    const disconnected = net.connect(permissionGateOperatorSocketPath(f.socketPath));
+    await once(disconnected, "connect");
+    const unavailableReply = once(disconnected, "data");
+    disconnected.end(`${JSON.stringify({ ...staleRequest, runtimeEpoch: f.transport.operatorEpoch })}\n`);
+    const unavailable = JSON.parse((await unavailableReply)[0].toString());
+    assert.equal(unavailable.success, false);
+    assert.match(unavailable.error, /unavailable/i);
+    assert.equal(commandCalls, 0);
+  } finally { await f.close(); }
+});
+
+async function waitForTransportDisconnect(transport: BridgeTransport): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (transport.connected && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(transport.connected, false, "controller disconnect should be observed");
+}
+
+test("malformed and oversized operator frames close promptly without affecting the main controller", async () => {
+  const f = await fixture();
+  try {
+    const malformed = net.connect(permissionGateOperatorSocketPath(f.socketPath));
+    await once(malformed, "connect");
+    const malformedReply = once(malformed, "data");
+    malformed.end("not-json\n");
+    const malformedResponse = JSON.parse((await malformedReply)[0].toString());
+    assert.equal(malformedResponse.success, false);
+
+    const oversized = net.connect(permissionGateOperatorSocketPath(f.socketPath));
+    await once(oversized, "connect");
+    const oversizedClosed = once(oversized, "close");
+    oversized.write(`${"x".repeat(4098)}\n`);
+    await oversizedClosed;
+
+    f.client.write('{"id":103,"type":"get_state"}\n');
+    assert.equal((await f.response(103)).owner, "old");
+    assert.equal(f.transport.connected, true);
   } finally { await f.close(); }
 });
 
