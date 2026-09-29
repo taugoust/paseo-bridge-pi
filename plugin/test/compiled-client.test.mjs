@@ -14,7 +14,7 @@ test('compiled contribution preserves Pi pills, isolates installations and ignor
   const { clientBundle } = await compilePlugin({ client: resolve(root, 'index.client.tsx') });
   const load = (name) => {
     if (name === '@getpaseo/plugin') return { defineRpc: contract => contract };
-    if (['@getpaseo/plugin/client', '@getpaseo/plugin/client/react-native', '@tanstack/react-query', 'react', 'react/jsx-runtime'].includes(name)) return {};
+    if (['@getpaseo/plugin/client', '@getpaseo/plugin/client/react-native', '@tanstack/react-query', 'react-native', 'react', 'react/jsx-runtime'].includes(name)) return {};
     return require(name);
   };
   const contribute = (0, eval)(clientBundle)(load).default;

@@ -6,7 +6,7 @@ import {
   useRpc,
 } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
-import { Pressable, Text, View } from "@getpaseo/plugin/client/react-native";
+import { Pressable, Text, View } from "react-native";
 import { permissionGateSetRpc, permissionGateStatusRpc } from "../shared/permission-gate";
 import { gateControlsDisabled, gateLabel } from "../shared/ui-state";
 import { mayApplyAsyncResult } from "../shared/lifecycle";
