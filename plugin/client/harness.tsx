@@ -90,8 +90,7 @@ function HarnessPanel({ kind, agentId, workspaceId, theme, navigation, host }: P
   const item = ready && !detail.isError && detail.data?.state === "available" ? detail.data.item : undefined;
   const taskLink = item && "paseoAgentId" in item ? item.paseoAgentId : undefined;
   return <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
-    <Text accessibilityRole="header" style={{ color: fg, fontSize: 18 }}>{kind === "jobs" ? "Background jobs" : "Pi subagents"} — read only</Text>
-    <Text style={{ color: muted }}>Viewing does not consume notifications or change running work. Showing up to 50 items owned by this Pi session.</Text>
+    <Text accessibilityRole="header" style={{ color: fg, fontSize: 18 }}>{kind === "jobs" ? "Background jobs" : "Pi subagents"}</Text>
     {button("Refresh", () => { void identity.refetch(); if (ready) { void list.refetch(); if (selectedId) void detail.refetch(); } }, identity.isFetching || list.isFetching || detail.isFetching)}
     {identity.isPending ? <Text style={{ color: muted }}>Connecting to this Pi session…</Text> : null}
     {identity.isError ? <Text style={{ color: danger }}>Cannot read the session status. Reconnect or refresh.</Text> : null}
