@@ -27,9 +27,10 @@ test('compiled contribution preserves Pi pills, isolates installations and ignor
     const client = {
       paseo: { agents: { list: async options => {
         signal = options.signal;
-        return { subscription: { subscribe: value => { observer = value; } } };
+        return { subscription: { subscribe: value => { observer ??= value; } } };
       } } },
       rpc: (contract, input) => new Promise(resolve => calls.push({ contract, input, resolve })),
+      addWorkspacePanel: () => () => {},
       addComposerPill: input => {
         const registration = { input, updates: [], removed: false,
           update(patch) { assert.equal(this.removed, false); this.updates.push(patch); },

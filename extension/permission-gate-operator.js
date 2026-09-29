@@ -71,6 +71,42 @@ export function permissionGateOperatorDescriptorPath(baseDir, agentId) {
   return path.join(baseDir, "operators", `${key}.json`);
 }
 
+export function harnessReadOnlyDescriptorPath(baseDir, agentId) {
+  const key = createHash("sha256").update(agentId).digest("hex");
+  return path.join(baseDir, "operators", `${key}.readonly.json`);
+}
+
+export function writeHarnessReadOnlyDescriptor(baseDir, descriptor) {
+  const directory = path.join(baseDir, "operators");
+  ensurePrivateDirectory(directory);
+  const destination = harnessReadOnlyDescriptorPath(baseDir, descriptor.agentId);
+  try {
+    const existingStat = fs.lstatSync(destination);
+    if (existingStat.isFile() && !existingStat.isSymbolicLink()
+      && (typeof process.getuid !== "function" || existingStat.uid === process.getuid())
+      && (existingStat.mode & 0o777) === 0o600
+      && JSON.stringify(JSON.parse(fs.readFileSync(destination, "utf8"))) === JSON.stringify(descriptor)) return destination;
+  } catch { /* create or replace a missing/invalid descriptor */ }
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  const fd = fs.openSync(temporary, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY
+    | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+  try { fs.writeFileSync(fd, `${JSON.stringify(descriptor)}\n`); fs.fsyncSync(fd); }
+  catch (error) { try { fs.unlinkSync(temporary); } catch {} throw error; }
+  finally { fs.closeSync(fd); }
+  fs.renameSync(temporary, destination); fs.chmodSync(destination, 0o600);
+  return destination;
+}
+
+export function removeHarnessReadOnlyDescriptor(baseDir, agentId, runtimeEpoch) {
+  const destination = harnessReadOnlyDescriptorPath(baseDir, agentId);
+  try {
+    const stat = fs.lstatSync(destination);
+    if (!stat.isFile() || stat.isSymbolicLink() || (typeof process.getuid === "function" && stat.uid !== process.getuid())) return;
+    const descriptor = JSON.parse(fs.readFileSync(destination, "utf8"));
+    if (descriptor.agentId === agentId && descriptor.runtimeEpoch === runtimeEpoch) fs.unlinkSync(destination);
+  } catch {}
+}
+
 function ensurePrivateDirectory(directory) {
   try { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); }
   catch { /* checked below */ }

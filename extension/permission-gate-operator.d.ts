@@ -18,6 +18,9 @@ export type PermissionGateOperatorIdentityV1 = {
 export function handlePermissionGateOperatorRequest(value: unknown, identity: PermissionGateOperatorIdentityV1): Record<string, unknown>;
 export function decodePermissionGateOperatorFrame(frame: Buffer): unknown;
 export function permissionGateOperatorSocketPath(bridgeSocket: string): string;
+export function harnessReadOnlyDescriptorPath(baseDir: string, agentId: string): string;
+export function writeHarnessReadOnlyDescriptor(baseDir: string, descriptor: { version: 1; socketPath: string; capability: string; agentId: string; sessionId: string; runtimeEpoch: string }): string;
+export function removeHarnessReadOnlyDescriptor(baseDir: string, agentId: string, runtimeEpoch: string): void;
 export function permissionGateOperatorDescriptorPath(baseDir: string, agentId: string): string;
 export function writePermissionGateOperatorDescriptor(baseDir: string, descriptor: PermissionGateOperatorDescriptorV1): string;
 export function removePermissionGateOperatorDescriptor(baseDir: string, agentId: string, runtimeEpoch: string): void;

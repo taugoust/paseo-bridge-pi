@@ -28,6 +28,8 @@ import {
   writePermissionGateOperatorDescriptor,
   type PermissionGateOperatorDescriptorV1,
   type PermissionGateOperatorIdentityV1,
+  writeHarnessReadOnlyDescriptor,
+  removeHarnessReadOnlyDescriptor,
 } from "./permission-gate-operator.js";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
@@ -38,6 +40,7 @@ import { unknownRpcCommandError } from "./rpc-compat.js";
 import { normalizePiEventForPaseo } from "./tool-result-normalization.js";
 import { SubagentTaskProjection, projectSubagentMessages } from "./subagent-task-projection.js";
 import { TurnVisibilityProjection } from "./turn-visibility.js";
+import { resolvePaseoChildRuntimeLink } from "./read-only-runtime-link.js";
 
 type RemoteUiSelectOptions = { signal?: AbortSignal };
 type RemoteUiBridgeV1 = {
@@ -887,9 +890,104 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     );
   }
 
+  function resolveExactLiveChildLink(ownerSessionId: string, item: any) {
+    return resolvePaseoChildRuntimeLink(ownerSessionId, item);
+  }
+
+  function publishHarnessReadOnlyDescriptor(): void {
+    const activeTransport = transport;
+    const ctx = latestCtx;
+    const agentId = currentAgentId;
+    if (!activeTransport || !activeTransport.connected || !ctx || !agentId || currentSessionFile !== activeTransport.sessionFile) {
+      revokeHarnessReadOnlyDescriptor(); return;
+    }
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (typeof sessionId !== "string" || !sessionId) throw new Error("Session unavailable");
+      writeHarnessReadOnlyDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), {
+        version: 1, socketPath: `${activeTransport.pipePath}.harness-readonly`,
+        capability: activeTransport.harnessReadOnlyCapability, agentId, sessionId, runtimeEpoch: activeTransport.operatorEpoch,
+      });
+    } catch { revokeHarnessReadOnlyDescriptor(); }
+  }
+
+  function revokeHarnessReadOnlyDescriptor(): void {
+    if (transport && currentAgentId) removeHarnessReadOnlyDescriptor(
+      path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch,
+    );
+  }
+
   function bindTransport(): void {
     transport?.bind({
       command: handleCommand,
+      async harnessReadOnly(request: any) {
+        const activeTransport = transport;
+        const ctx = latestCtx;
+        const agentId = currentAgentId;
+        if (!activeTransport || !ctx || !agentId || !activeTransport.connected || currentSessionFile !== activeTransport.sessionFile
+          || request.agentId !== agentId || request.sessionId !== ctx.sessionManager.getSessionId()
+          || request.runtimeEpoch !== activeTransport.operatorEpoch || request.capability !== activeTransport.harnessReadOnlyCapability) {
+          throw new Error("Read-only harness authentication failed");
+        }
+        let service: any;
+        const assertCurrent = () => {
+          const liveRegistry = (globalThis as any).__paeHarnessReadOnlyV1;
+          const liveService = method.startsWith("jobs.") ? liveRegistry?.jobs : method.startsWith("subagents.") ? liveRegistry?.subagents : undefined;
+          if (transport !== activeTransport || latestCtx !== ctx || currentAgentId !== agentId
+            || currentSessionFile !== activeTransport.sessionFile || !activeTransport.connected
+            || ctx.sessionManager.getSessionId() !== request.sessionId || activeTransport.operatorEpoch !== request.runtimeEpoch
+            || activeTransport.harnessReadOnlyCapability !== request.capability
+            || liveRegistry !== registry || (service && liveService !== service)) throw new Error("Read-only harness session changed during request");
+        };
+        const registry = (globalThis as any).__paeHarnessReadOnlyV1;
+        if (!registry || registry.protocol !== 1) throw new Error("Read-only harness service unavailable");
+        const method = request.method;
+        const payload = request.payload;
+        if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.sessionId !== request.sessionId) throw new Error("Invalid read-only payload");
+        const exactKeys = (required: string[], optional: string[] = []) => {
+          const keys = Object.keys(payload);
+          return required.every(key => keys.includes(key)) && keys.every(key => required.includes(key) || optional.includes(key));
+        };
+        if (method === "status") {
+          if (!exactKeys(["sessionId"])) throw new Error("Unexpected status payload fields");
+          assertCurrent();
+          return { available: true, sessionId: request.sessionId,
+          jobs: Boolean(registry.jobs?.protocol === 1 && registry.jobs.sessionId === request.sessionId),
+          subagents: Boolean(registry.subagents?.protocol === 1 && registry.subagents.sessionId === request.sessionId) };
+        }
+        service = method.startsWith("jobs.") ? registry.jobs : method.startsWith("subagents.") ? registry.subagents : undefined;
+        if (!service || service.protocol !== 1 || service.sessionId !== request.sessionId) throw new Error("Read-only service unavailable for this session");
+        if (method === "jobs.list" || method === "subagents.list") {
+          if (!exactKeys(["sessionId"], ["limit", "cursor"])) throw new Error("Unexpected list payload fields");
+          const { sessionId, limit, cursor } = payload;
+          if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)) throw new Error("Invalid page limit");
+          if (cursor !== undefined && (typeof cursor !== "string" || Buffer.byteLength(cursor) > 1024)) throw new Error("Invalid page cursor");
+          const page = await service.list({ sessionId, ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }) });
+          assertCurrent();
+          // Resolve a child chat only when its detail is opened. Scanning the
+          // runtime registry once per list row is expensive on shared homes.
+          return page;
+        }
+        if (["jobs.output", "subagents.report"].includes(method)) {
+          const key = method === "jobs.output" ? "jobId" : "taskId";
+          if (!exactKeys(["sessionId", key], ["maxBytes"])) throw new Error("Unexpected detail payload fields");
+          if (typeof payload[key] !== "string" || !payload[key] || Buffer.byteLength(payload[key]) > 128) throw new Error("Invalid read-only item ID");
+          const maxBytes = payload.maxBytes ?? 48 * 1024;
+          if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 48 * 1024) throw new Error("Invalid read-only byte limit");
+          if (method === "jobs.output") {
+            const output = await service.output({ sessionId: request.sessionId, jobId: payload.jobId, maxBytes });
+            assertCurrent();
+            return output;
+          }
+          const report = await service.report({ sessionId: request.sessionId, taskId: payload.taskId, maxBytes });
+          assertCurrent();
+          if (!report?.item || typeof report.item.taskId !== "string" || typeof report.item.childId !== "string"
+            || typeof report.item.groupId !== "string" || typeof report.item.runtimeId !== "string" || !Number.isSafeInteger(report.item.attempt)) return report;
+          const link = resolveExactLiveChildLink(request.sessionId, report.item);
+          return link.available ? { ...report, item: { ...report.item, paseoAgentId: link.agentId, paseoWorkspaceId: link.workspaceId } } : report;
+        }
+        throw new Error("Unsupported read-only harness method");
+      },
       permissionGateOperator() {
         const descriptor = activePermissionGateOperatorDescriptor();
         const activeTransport = transport;
@@ -928,6 +1026,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       },
       attached() {
         publishPermissionGateOperatorDescriptor();
+        publishHarnessReadOnlyDescriptor();
         providerReconnect.connected();
         debugLog("client connected");
         notifyTui("Paseo attached to this session");
@@ -935,6 +1034,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       },
       detached() {
         revokePermissionGateOperatorDescriptor();
+        revokeHarnessReadOnlyDescriptor();
         transport?.rotateOperatorEpoch();
         cancelPendingRemoteUiRequests();
         providerReconnect.trigger();
@@ -946,6 +1046,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
 
   function stopServer(): void {
     revokePermissionGateOperatorDescriptor();
+    revokeHarnessReadOnlyDescriptor();
     providerReconnect.stop();
     cancelPendingRemoteUiRequests();
     transport?.close();
@@ -1068,9 +1169,11 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       removePermissionGateOperatorDescriptor(
         path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch,
       );
+      removeHarnessReadOnlyDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch);
     }
     currentAgentId = agentId;
     publishPermissionGateOperatorDescriptor();
+    publishHarnessReadOnlyDescriptor();
     tagAgentPane();
     if (currentSessionFile && latestCtx) writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
     debugLog(`paseo agent id: ${agentId}${reused ? " (reused)" : ""}`);
@@ -1235,6 +1338,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           writeRuntimeRecord(currentSessionFile, latestCtx.cwd);
         }
         publishPermissionGateOperatorDescriptor();
+        publishHarnessReadOnlyDescriptor();
         if (!placement.infrastructure && !currentAgentId) registerWithPaseo(currentSessionFile, latestCtx.cwd);
         tagAgentPane(placement);
       }, 2000);
@@ -1253,6 +1357,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     placementTimer = undefined;
     if (event.reason === "reload" && transport) {
       revokePermissionGateOperatorDescriptor();
+      revokeHarnessReadOnlyDescriptor();
       providerReconnect.stop();
       cancelPendingRemoteUiRequests();
       retainBridgeForReload(transport, currentAgentId, titleAttempted);

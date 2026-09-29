@@ -100,8 +100,10 @@ built-in commands.
 ## Permission prompt button in Paseo
 
 The optional [Permission Gate plugin](plugin/README.md) adds a **Prompts · On/Off**
-control to each active Pi agent's composer. It uses the operator API below rather
-than sending slash commands, so it does not interrupt the chat or current turn.
+control to each active Pi agent's composer, plus read-only **Jobs** and **Pi subagents**
+panels for status, bounded output/reports, and verified child-chat links. These
+controls use private bridge APIs rather than slash commands, so they do not
+interrupt the chat or current turn.
 Paseo 0.10 or newer and this updated bridge must be loaded. Install the plugin on
 the daemon host, as the same user running Pi:
 
@@ -111,8 +113,11 @@ paseo plugin install github:taugoust/paseo-bridge-pi --path plugin
 
 No custom desktop/mobile app build is needed. The backend currently targets
 Unix daemon hosts. Only live, bridged, guard-only Permission Gate sessions are
-controllable; other Pi sessions show an unavailable state. Existing slash-command
-submission behavior is unchanged.
+controllable through the permission toggle; other Pi sessions show an unavailable
+state there. The Jobs/Subagents read-only API is separate and does not require
+guard-only authority, but requires matching updated `pi-agent-extensions` APIs.
+Unsupported task backends are labeled explicitly. Viewing output never consumes
+completion notifications. Existing slash-command submission behavior is unchanged.
 
 ## Permission prompt mode operator API
 

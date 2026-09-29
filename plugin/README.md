@@ -1,12 +1,23 @@
-# Paseo Permission Gate
+# Paseo Pi controls
 
-A Paseo 0.10 plugin that exposes an agent-specific composer pill for explicitly enabling or disabling permission prompts. Install from this repository with:
+A Paseo 0.10 plugin with agent-specific composer controls for permission prompts and read-only Jobs / Pi subagents views. Install from this repository with:
 
 ```sh
 paseo plugin install github:taugoust/paseo-bridge-pi --path plugin
 ```
 
 The pill is registered against each non-archived Pi agent's `agentId` and workspace. The daemon and Pi must run as the same Unix user; Windows daemon hosts are not supported. Changes apply to the selected agent and its children; underlying authorization and sandbox policy remain mandatory. Its label reports `On`, `Off`, `unavailable`, or a checking state. The popover reads current state, disables controls when state is stale/unavailable or an operation is busy, and sends explicit `enabled: true` or `enabled: false` requests. Status failures never imply a mode. No model prompt, chat message, abort, or slash command is used.
+
+## Read-only Jobs and Pi subagents
+
+The **Jobs** and **Pi subagents** pills open agent-bound panels. These request data only while open, refresh every five seconds, and offer manual refresh. The first version shows up to 50 direct session-owned jobs or native tasks, not a recursive tree.
+
+- Jobs: status, elapsed time, observation-only labels, and bounded output.
+- Native subagents: status, attempt, bounded answer-only report, and **Open child chat** only when the backend verifies an exact live Paseo runtime match.
+- Retained data is labeled as a snapshot, with its update time when known. Reloading or replacing the Pi session invalidates an old detail selection.
+- No cancel, reap, resume, messaging, or notification-consumption actions are exposed. Job output does not mark a completion notification read.
+
+Both the bridge and `pi-agent-extensions` must include the version-1 read-only harness API and be loaded in the Pi session. This read-only interface does not require permission-gate authority. Unsupported backends (including AgentSH-backed task snapshots in this first version) show an explanation rather than pretending their task list is empty. To inspect a child's local jobs, open that child's Pi chat and its Jobs view.
 
 ## Trust scope
 

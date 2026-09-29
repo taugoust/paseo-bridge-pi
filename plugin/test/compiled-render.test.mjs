@@ -33,8 +33,9 @@ test('compiled popover uses actual host export boundaries and renders every stat
   let observer;
   let contribution;
   const cleanup = contribute({
-    paseo: { agents: { list: async () => ({ subscription: { subscribe: value => { observer = value; } } }) } },
+    paseo: { agents: { list: async () => ({ subscription: { subscribe: value => { observer ??= value; } } }) } },
     rpc: async () => ({ available: false, enabled: null }),
+    addWorkspacePanel: () => () => {},
     addComposerPill: value => { contribution = value; return { update() {}, remove() {} }; },
   });
   const nodes = element => !element || typeof element !== 'object' ? [] : [element, ...[element.props?.children].flat(Infinity).flatMap(nodes)];

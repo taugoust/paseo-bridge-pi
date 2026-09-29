@@ -17,6 +17,7 @@ type Callbacks = {
   detached(): void;
   error(error: unknown): void;
   permissionGateOperator?(): PermissionGateOperatorIdentityV1 | undefined;
+  harnessReadOnly?(request: unknown): Promise<unknown>;
 };
 
 /** Socket ownership is independent of the replaceable extension context. */
@@ -25,6 +26,8 @@ export class BridgeTransport {
   private snapshotServer: net.Server | null = null;
   private operatorServer: net.Server | null = null;
   private operatorSockets = new Set<net.Socket>();
+  private readonlyServer: net.Server | null = null;
+  private readonlySockets = new Set<net.Socket>();
   private client: net.Socket | null = null;
   private callbacks?: Callbacks;
   private closed = false;
@@ -36,7 +39,9 @@ export class BridgeTransport {
   private _operatorEpoch?: string;
   get operatorCapability(): string { return this._operatorCapability ??= randomBytes(32).toString("hex"); }
   get operatorEpoch(): string { return this._operatorEpoch ??= randomUUID(); }
-  rotateOperatorEpoch(): void { this._operatorEpoch = randomUUID(); }
+  get harnessReadOnlyCapability(): string { return this._harnessReadOnlyCapability ??= randomBytes(32).toString("hex"); }
+  private _harnessReadOnlyCapability?: string;
+  rotateOperatorEpoch(): void { this._operatorEpoch = randomUUID(); this._harnessReadOnlyCapability = randomBytes(32).toString("hex"); }
 
   constructor(sessionFile: string, pipePath: string) {
     this.sessionFile = sessionFile;
@@ -51,6 +56,7 @@ export class BridgeTransport {
     if (this.server) {
       this.ensureForkSnapshotEndpoint();
       this.ensureOperatorEndpoint();
+      this.ensureReadonlyEndpoint();
     }
     if (this.connected) callbacks.attached();
   }
@@ -64,6 +70,7 @@ export class BridgeTransport {
     }
     this.ensureForkSnapshotEndpoint();
     this.ensureOperatorEndpoint();
+    this.ensureReadonlyEndpoint();
     this.server = net.createServer((socket) => this.attach(socket));
     this.server.on("error", (error) => this.callbacks?.error(error));
     this.server.listen(this.pipePath, () => {
@@ -119,6 +126,68 @@ export class BridgeTransport {
     });
   }
 
+  private ensureReadonlyEndpoint(): void {
+    this.readonlySockets ??= new Set<net.Socket>();
+    if (this.readonlyServer || this.closed) return;
+    const socketPath = `${this.pipePath}.harness-readonly`;
+    if (process.platform !== "win32") { try { fs.unlinkSync(socketPath); } catch {} }
+    this.readonlyServer = net.createServer((socket) => {
+      if (this.readonlySockets.size >= 16 || this.closed) { socket.destroy(); return; }
+      this.readonlySockets.add(socket);
+      socket.on("close", () => this.readonlySockets.delete(socket));
+      socket.on("error", (error) => this.callbacks?.error(error));
+      socket.setTimeout(5000, () => socket.destroy());
+      let buffer = Buffer.alloc(0);
+      let received = false;
+      socket.on("data", (chunk: Buffer) => {
+        if (received || buffer.length + chunk.length > 8192) { socket.destroy(); return; }
+        buffer = Buffer.concat([buffer, chunk]);
+        const newline = buffer.indexOf(10);
+        if (newline < 0) return;
+        received = true;
+        if (!newline || newline !== buffer.length - 1) { socket.destroy(); return; }
+        void (async () => {
+          let response: Record<string, unknown>;
+          let requestId: string | null = null;
+          let requestAgentId: string | null = null;
+          let requestSessionId: string | null = null;
+          let requestRuntimeEpoch: string | null = null;
+          try {
+            const request = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, newline)));
+            const cb = this.callbacks?.harnessReadOnly;
+            if (!request || typeof request !== "object" || request.v !== 1 || request.type !== "harness_readonly"
+              || typeof request.id !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(request.id)
+              || Object.keys(request).sort().join(",") !== "agentId,capability,id,method,payload,runtimeEpoch,sessionId,type,v"
+              || typeof request.capability !== "string" || !/^[a-f0-9]{64}$/.test(request.capability)
+              || typeof request.agentId !== "string" || typeof request.sessionId !== "string"
+              || typeof request.runtimeEpoch !== "string" || typeof request.method !== "string"
+              || !cb) throw new Error("Invalid or unavailable read-only request");
+            requestId = request.id;
+            requestAgentId = request.agentId;
+            requestSessionId = request.sessionId;
+            requestRuntimeEpoch = request.runtimeEpoch;
+            const data = await cb(request);
+            response = { v: 1, type: "harness_readonly", id: request.id, success: true,
+              agentId: request.agentId, sessionId: request.sessionId, runtimeEpoch: request.runtimeEpoch, data };
+          } catch (error) {
+            response = { v: 1, type: "harness_readonly", id: requestId, success: false,
+              error: error instanceof Error ? error.message.replace(/[\r\n\x00-\x1f\x7f]+/g, " ").slice(0, 300) : "Invalid read-only request" };
+            if (requestAgentId && requestSessionId && requestRuntimeEpoch) Object.assign(response, {
+              agentId: requestAgentId, sessionId: requestSessionId, runtimeEpoch: requestRuntimeEpoch,
+            });
+          }
+          const frame = `${JSON.stringify(response)}\n`;
+          if (Buffer.byteLength(frame) > 64 * 1024) socket.end(`${JSON.stringify({ v: 1, type: "harness_readonly", id: requestId, success: false,
+            ...(requestAgentId && requestSessionId && requestRuntimeEpoch ? { agentId: requestAgentId, sessionId: requestSessionId, runtimeEpoch: requestRuntimeEpoch } : {}),
+            error: "Oversized read-only result" })}\n`);
+          else socket.end(frame);
+        })().catch(() => socket.destroy());
+      });
+    });
+    this.readonlyServer.on("error", (error) => this.callbacks?.error(error));
+    this.readonlyServer.listen(socketPath, () => { if (process.platform !== "win32") { try { fs.chmodSync(socketPath, 0o600); } catch {} } });
+  }
+
   private ensureForkSnapshotEndpoint(): void {
     if (this.snapshotServer || this.closed) return;
     // A separate read-only endpoint never takes over Paseo's controller socket.
@@ -161,12 +230,17 @@ export class BridgeTransport {
     this.snapshotServer = null;
     this.operatorServer?.close();
     this.operatorServer = null;
+    this.readonlyServer?.close();
+    this.readonlyServer = null;
     for (const socket of this.operatorSockets ?? []) socket.destroy();
     this.operatorSockets?.clear();
+    for (const socket of this.readonlySockets ?? []) socket.destroy();
+    this.readonlySockets?.clear();
     if (process.platform !== "win32") {
       try { fs.unlinkSync(this.pipePath); } catch {}
       try { fs.unlinkSync(`${this.pipePath}.fork`); } catch {}
       try { fs.unlinkSync(permissionGateOperatorSocketPath(this.pipePath)); } catch {}
+      try { fs.unlinkSync(`${this.pipePath}.harness-readonly`); } catch {}
     }
   }
 
