@@ -74,6 +74,9 @@ export class BridgeTransport {
   }
 
   private ensureOperatorEndpoint(): void {
+    // A retained transport may predate this endpoint. Prototype replacement
+    // during /reload does not run the new constructor/field initializers.
+    this.operatorSockets ??= new Set<net.Socket>();
     if (this.operatorServer || this.closed) return;
     const operatorPath = permissionGateOperatorSocketPath(this.pipePath);
     if (process.platform !== "win32") {
@@ -158,8 +161,8 @@ export class BridgeTransport {
     this.snapshotServer = null;
     this.operatorServer?.close();
     this.operatorServer = null;
-    for (const socket of this.operatorSockets) socket.destroy();
-    this.operatorSockets.clear();
+    for (const socket of this.operatorSockets ?? []) socket.destroy();
+    this.operatorSockets?.clear();
     if (process.platform !== "win32") {
       try { fs.unlinkSync(this.pipePath); } catch {}
       try { fs.unlinkSync(`${this.pipePath}.fork`); } catch {}

@@ -149,9 +149,14 @@ test("read-only native fork snapshot works while Paseo controller remains attach
   } finally { await f.close(); }
 });
 
-test("separate permission-gate operator socket is narrow and leaves bridge controller untouched", async () => {
+test("retained pre-operator transport gains working controls without interrupting its controller", async () => {
   const f = await fixture();
   try {
+    // /reload replaces the prototype, not the constructor. Existing transports
+    // from before operator support do not have this new instance field.
+    delete (f.transport as any).operatorSockets;
+    retainBridgeForReload(f.transport, "agent-1", false);
+    assert.equal(takeBridgeAfterReload(f.transport.sessionFile)?.transport, f.transport);
     const capability = "a".repeat(64);
     let epoch = "";
     let enabled = true;
