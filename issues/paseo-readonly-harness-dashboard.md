@@ -12,4 +12,6 @@ Lists show up to 50 direct session-owned jobs/native tasks. Output/report text i
 
 ## Status
 
-Implementation and validation in progress. Deployment is separate. The requested publication sequence is commit, pull latest changes, enable the plugin in the shared DOS configuration, validate, and push updated pins.
+Implemented and validated; deployment and live client visual confirmation remain separate. Bridge tests/typecheck and all 18 plugin tests pass, including compiled UI rendering for loading/error/empty/list/detail states, stale-generation invalidation, actual backend/bridge interoperability without gate authority, reload compatibility, and exact child-link identity checks. No full frontend declaration typecheck is claimed; host-bundle compilation and controlled rendering tests are used.
+
+The requested publication sequence is commit, pull latest changes, enable the plugin in the shared DOS configuration, validate, and push updated pins.
