@@ -9,6 +9,7 @@ import {
   permissionGateOperatorSocketPath,
   type PermissionGateOperatorIdentityV1,
 } from "./permission-gate-operator.js";
+import { decodeForegroundTasksFrame, foregroundTasksCapability, foregroundTasksSocketPath, validateForegroundTasksEnvelope, type ForegroundTasksAuthIdentityV1 } from "./foreground-task-operator.js";
 
 type Callbacks = {
   command(value: any): Promise<void>;
@@ -18,6 +19,8 @@ type Callbacks = {
   error(error: unknown): void;
   permissionGateOperator?(): PermissionGateOperatorIdentityV1 | undefined;
   harnessReadOnly?(request: unknown): Promise<unknown>;
+  foregroundTasksIdentity?(): ForegroundTasksAuthIdentityV1 | undefined;
+  foregroundTasks?(request: unknown): Promise<unknown>;
 };
 
 /** Socket ownership is independent of the replaceable extension context. */
@@ -28,6 +31,8 @@ export class BridgeTransport {
   private operatorSockets = new Set<net.Socket>();
   private readonlyServer: net.Server | null = null;
   private readonlySockets = new Set<net.Socket>();
+  private foregroundTasksServer: net.Server | null = null;
+  private foregroundTasksSockets = new Set<net.Socket>();
   private client: net.Socket | null = null;
   private callbacks?: Callbacks;
   private closed = false;
@@ -41,7 +46,9 @@ export class BridgeTransport {
   get operatorEpoch(): string { return this._operatorEpoch ??= randomUUID(); }
   get harnessReadOnlyCapability(): string { return this._harnessReadOnlyCapability ??= randomBytes(32).toString("hex"); }
   private _harnessReadOnlyCapability?: string;
-  rotateOperatorEpoch(): void { this._operatorEpoch = randomUUID(); this._harnessReadOnlyCapability = randomBytes(32).toString("hex"); }
+  private _foregroundTasksCapability?: string;
+  get foregroundTasksCapability(): string { return this._foregroundTasksCapability ??= foregroundTasksCapability(); }
+  rotateOperatorEpoch(): void { this._operatorEpoch = randomUUID(); this._harnessReadOnlyCapability = randomBytes(32).toString("hex"); this._foregroundTasksCapability = foregroundTasksCapability(); }
 
   constructor(sessionFile: string, pipePath: string) {
     this.sessionFile = sessionFile;
@@ -57,6 +64,7 @@ export class BridgeTransport {
       this.ensureForkSnapshotEndpoint();
       this.ensureOperatorEndpoint();
       this.ensureReadonlyEndpoint();
+      this.ensureForegroundTasksEndpoint();
     }
     if (this.connected) callbacks.attached();
   }
@@ -71,6 +79,7 @@ export class BridgeTransport {
     this.ensureForkSnapshotEndpoint();
     this.ensureOperatorEndpoint();
     this.ensureReadonlyEndpoint();
+    this.ensureForegroundTasksEndpoint();
     this.server = net.createServer((socket) => this.attach(socket));
     this.server.on("error", (error) => this.callbacks?.error(error));
     this.server.listen(this.pipePath, () => {
@@ -188,6 +197,56 @@ export class BridgeTransport {
     this.readonlyServer.listen(socketPath, () => { if (process.platform !== "win32") { try { fs.chmodSync(socketPath, 0o600); } catch {} } });
   }
 
+  private ensureForegroundTasksEndpoint(): void {
+    this.foregroundTasksSockets ??= new Set<net.Socket>();
+    if (this.foregroundTasksServer || this.closed) return;
+    const socketPath = foregroundTasksSocketPath(this.pipePath);
+    if (process.platform !== "win32") { try { fs.unlinkSync(socketPath); } catch {} }
+    this.foregroundTasksServer = net.createServer((socket) => {
+      if (this.foregroundTasksSockets.size >= 16 || this.closed) { socket.destroy(); return; }
+      this.foregroundTasksSockets.add(socket);
+      socket.on("close", () => this.foregroundTasksSockets.delete(socket));
+      socket.on("error", (error) => this.callbacks?.error(error));
+      socket.setTimeout(15_000, () => socket.destroy());
+      let buffer = Buffer.alloc(0), received = false;
+      socket.on("data", (chunk: Buffer) => {
+        if (received || buffer.length + chunk.length > 512 * 1024 + 1) { socket.destroy(); return; }
+        buffer = Buffer.concat([buffer, chunk]);
+        const newline = buffer.indexOf(10);
+        if (newline < 0) return;
+        received = true;
+        if (!newline || newline !== buffer.length - 1) { socket.destroy(); return; }
+        void (async () => {
+          let request: any, identity: ReturnType<NonNullable<Callbacks["foregroundTasksIdentity"]>>;
+          try {
+            request = decodeForegroundTasksFrame(buffer.subarray(0, newline));
+            identity = this.callbacks?.foregroundTasksIdentity?.();
+            const execute = this.callbacks?.foregroundTasks;
+            if (!identity || !execute || !validateForegroundTasksEnvelope(request, identity)) throw new Error("Foreground-task authentication failed");
+            const data = await execute(request.request);
+            const current = this.callbacks?.foregroundTasksIdentity?.();
+            if (this.closed || current !== identity && (!current || current.agentId !== identity.agentId || current.sessionId !== identity.sessionId
+              || current.runtimeEpoch !== identity.runtimeEpoch || current.capability !== identity.capability || current.service !== identity.service)) {
+              throw new Error("Foreground-task session changed during request");
+            }
+            const response = { v: 1, type: "foreground_tasks", id: request.id, success: true,
+              agentId: identity.agentId, sessionId: identity.sessionId, runtimeEpoch: identity.runtimeEpoch, data };
+            const frame = `${JSON.stringify(response)}\n`;
+            if (Buffer.byteLength(frame) > 256 * 1024) throw new Error("Oversized foreground-task response");
+            socket.end(frame);
+          } catch (error) {
+            const frame = `${JSON.stringify({ v: 1, type: "foreground_tasks", id: typeof request?.id === "string" ? request.id : null,
+              success: false, ...(identity ? { agentId: identity.agentId, sessionId: identity.sessionId, runtimeEpoch: identity.runtimeEpoch } : {}),
+              error: error instanceof Error ? error.message.replace(/[\r\n\x00-\x1f\x7f]+/g, " ").slice(0, 300) : "Foreground-task request failed" })}\n`;
+            socket.end(Buffer.byteLength(frame) <= 4096 ? frame : "{\"v\":1,\"type\":\"foreground_tasks\",\"id\":null,\"success\":false,\"error\":\"Foreground-task request failed\"}\n");
+          }
+        })().catch(() => socket.destroy());
+      });
+    });
+    this.foregroundTasksServer.on("error", (error) => this.callbacks?.error(error));
+    this.foregroundTasksServer.listen(socketPath, () => { if (process.platform !== "win32") { try { fs.chmodSync(socketPath, 0o600); } catch {} } });
+  }
+
   private ensureForkSnapshotEndpoint(): void {
     if (this.snapshotServer || this.closed) return;
     // A separate read-only endpoint never takes over Paseo's controller socket.
@@ -232,6 +291,10 @@ export class BridgeTransport {
     this.operatorServer = null;
     this.readonlyServer?.close();
     this.readonlyServer = null;
+    this.foregroundTasksServer?.close();
+    this.foregroundTasksServer = null;
+    for (const socket of this.foregroundTasksSockets ?? []) socket.destroy();
+    this.foregroundTasksSockets?.clear();
     for (const socket of this.operatorSockets ?? []) socket.destroy();
     this.operatorSockets?.clear();
     for (const socket of this.readonlySockets ?? []) socket.destroy();
@@ -241,6 +304,7 @@ export class BridgeTransport {
       try { fs.unlinkSync(`${this.pipePath}.fork`); } catch {}
       try { fs.unlinkSync(permissionGateOperatorSocketPath(this.pipePath)); } catch {}
       try { fs.unlinkSync(`${this.pipePath}.harness-readonly`); } catch {}
+      try { fs.unlinkSync(foregroundTasksSocketPath(this.pipePath)); } catch {}
     }
   }
 

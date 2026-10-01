@@ -1,0 +1,10 @@
+export type ForegroundTasksDescriptorV1 = { version: 1; socketPath: string; capability: string; agentId: string; sessionId: string; runtimeEpoch: string; serviceEpoch: string };
+export function foregroundTasksSocketPath(bridgeSocket: string): string;
+export function foregroundTasksDescriptorPath(baseDir: string, agentId: string): string;
+export function writeForegroundTasksDescriptor(baseDir: string, descriptor: ForegroundTasksDescriptorV1): string;
+export function removeForegroundTasksDescriptor(baseDir: string, agentId: string, runtimeEpoch: string): void;
+export type ForegroundTasksAuthIdentityV1 = { agentId: string; sessionId: string; runtimeEpoch: string; capability: string; service: { sessionId: string; epoch: string; execute(request: unknown): Promise<unknown> } };
+export function validateForegroundTasksEnvelope(value: unknown, identity: ForegroundTasksAuthIdentityV1): boolean;
+export function decodeForegroundTasksFrame(frame: Buffer): unknown;
+export function foregroundTasksCapability(): string;
+export function foregroundTasksFrameLimit(): number;

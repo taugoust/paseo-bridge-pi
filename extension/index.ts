@@ -31,6 +31,7 @@ import {
   writeHarnessReadOnlyDescriptor,
   removeHarnessReadOnlyDescriptor,
 } from "./permission-gate-operator.js";
+import { foregroundTasksSocketPath, removeForegroundTasksDescriptor, writeForegroundTasksDescriptor } from "./foreground-task-operator.js";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import { dispatchPaseoPrompt } from "./prompt-dispatch.js";
@@ -917,6 +918,34 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     );
   }
 
+  function activeForegroundTasksService() {
+    const service = (globalThis as Record<string, any>).__paeForegroundTasksV1;
+    const ctx = latestCtx;
+    if (!service || service.protocol !== 1 || typeof service.sessionId !== "string" || typeof service.epoch !== "string"
+      || typeof service.execute !== "function" || !ctx || service.sessionId !== ctx.sessionManager.getSessionId()) return undefined;
+    return service;
+  }
+
+  function activeForegroundTasksDescriptor() {
+    const activeTransport = transport, ctx = latestCtx, agentId = currentAgentId, service = activeForegroundTasksService();
+    if (!activeTransport || !activeTransport.connected || !ctx || !agentId || !service || currentSessionFile !== activeTransport.sessionFile) return undefined;
+    return { version: 1 as const, socketPath: foregroundTasksSocketPath(activeTransport.pipePath), capability: activeTransport.foregroundTasksCapability,
+      agentId, sessionId: ctx.sessionManager.getSessionId(), runtimeEpoch: activeTransport.operatorEpoch, serviceEpoch: service.epoch };
+  }
+
+  function publishForegroundTasksDescriptor(): void {
+    const descriptor = activeForegroundTasksDescriptor();
+    if (!descriptor) { revokeForegroundTasksDescriptor(); return; }
+    try { writeForegroundTasksDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), descriptor); }
+    catch { revokeForegroundTasksDescriptor(); }
+  }
+
+  function revokeForegroundTasksDescriptor(): void {
+    if (transport && currentAgentId) removeForegroundTasksDescriptor(
+      path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch,
+    );
+  }
+
   function bindTransport(): void {
     transport?.bind({
       command: handleCommand,
@@ -988,6 +1017,28 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         }
         throw new Error("Unsupported read-only harness method");
       },
+      foregroundTasksIdentity() {
+        const descriptor = activeForegroundTasksDescriptor();
+        const service = activeForegroundTasksService();
+        if (!descriptor || !service) return undefined;
+        return { ...descriptor, service };
+      },
+      async foregroundTasks(request: any) {
+        const service = activeForegroundTasksService();
+        const identity = activeForegroundTasksDescriptor();
+        const activeTransport = transport;
+        const ctx = latestCtx;
+        if (!service || !identity || !activeTransport || !ctx || request?.sessionId !== service.sessionId || request?.epoch !== service.epoch) {
+          throw new Error("Foreground-task service unavailable or stale");
+        }
+        const result = await service.execute(request);
+        if (transport !== activeTransport || latestCtx !== ctx || activeForegroundTasksService() !== service
+          || !activeTransport.connected || currentAgentId !== identity.agentId || currentSessionFile !== activeTransport.sessionFile
+          || ctx.sessionManager.getSessionId() !== identity.sessionId || activeTransport.operatorEpoch !== identity.runtimeEpoch) {
+          throw new Error("Foreground-task identity changed during request");
+        }
+        return result;
+      },
       permissionGateOperator() {
         const descriptor = activePermissionGateOperatorDescriptor();
         const activeTransport = transport;
@@ -1027,6 +1078,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       attached() {
         publishPermissionGateOperatorDescriptor();
         publishHarnessReadOnlyDescriptor();
+        publishForegroundTasksDescriptor();
         providerReconnect.connected();
         debugLog("client connected");
         notifyTui("Paseo attached to this session");
@@ -1035,6 +1087,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       detached() {
         revokePermissionGateOperatorDescriptor();
         revokeHarnessReadOnlyDescriptor();
+        revokeForegroundTasksDescriptor();
         transport?.rotateOperatorEpoch();
         cancelPendingRemoteUiRequests();
         providerReconnect.trigger();
@@ -1047,6 +1100,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   function stopServer(): void {
     revokePermissionGateOperatorDescriptor();
     revokeHarnessReadOnlyDescriptor();
+    revokeForegroundTasksDescriptor();
     providerReconnect.stop();
     cancelPendingRemoteUiRequests();
     transport?.close();
@@ -1339,6 +1393,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         }
         publishPermissionGateOperatorDescriptor();
         publishHarnessReadOnlyDescriptor();
+        publishForegroundTasksDescriptor();
         if (!placement.infrastructure && !currentAgentId) registerWithPaseo(currentSessionFile, latestCtx.cwd);
         tagAgentPane(placement);
       }, 2000);
@@ -1358,6 +1413,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     if (event.reason === "reload" && transport) {
       revokePermissionGateOperatorDescriptor();
       revokeHarnessReadOnlyDescriptor();
+      revokeForegroundTasksDescriptor();
       providerReconnect.stop();
       cancelPendingRemoteUiRequests();
       retainBridgeForReload(transport, currentAgentId, titleAttempted);

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BridgeTransport, retainBridgeForReload, takeBridgeAfterReload, discardRetainedBridge } from "../extension/bridge-transport.ts";
 import { permissionGateOperatorSocketPath } from "../extension/permission-gate-operator.js";
+import { foregroundTasksSocketPath } from "../extension/foreground-task-operator.js";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "pi-bridge-reload-"));
@@ -284,6 +285,68 @@ test("malformed and oversized operator frames close promptly without affecting t
     f.client.write('{"id":103,"type":"get_state"}\n');
     assert.equal((await f.response(103)).owner, "old");
     assert.equal(f.transport.connected, true);
+  } finally { await f.close(); }
+});
+
+test("foreground-task private endpoint authenticates parent identity and routes only the typed service request", async () => {
+  const f = await fixture();
+  try {
+    const service = { sessionId: "session-1", epoch: "core-epoch", async execute(request: any) { return { operation: request.operation, sessionId: request.sessionId, epoch: request.epoch }; } };
+    let calls = 0;
+    const identity = () => ({ agentId: "agent-1", sessionId: "session-1", runtimeEpoch: f.transport.operatorEpoch,
+      capability: f.transport.foregroundTasksCapability, service });
+    f.transport.bind({ command: async cmd => f.transport.send({ id: cmd.id, success: true }), foregroundTasksIdentity: identity,
+      foregroundTasks: async request => { calls++; return service.execute(request); }, attached() {}, detached() {}, error: error => f.errors.push(error) });
+    const base = { v: 1, type: "foreground_tasks", id: "request.1", capability: f.transport.foregroundTasksCapability,
+      agentId: "agent-1", sessionId: "session-1", runtimeEpoch: f.transport.operatorEpoch,
+      request: { operation: "list", sessionId: "session-1", epoch: "core-epoch" } };
+    async function exchange(value: unknown) {
+      const socket = net.connect(foregroundTasksSocketPath(f.socketPath));
+      await once(socket, "connect");
+      let payload = "";
+      socket.on("data", chunk => { payload += chunk.toString(); });
+      socket.end(`${JSON.stringify(value)}\n`);
+      await once(socket, "end");
+      return JSON.parse(payload);
+    }
+    assert.deepEqual(await exchange(base), { v: 1, type: "foreground_tasks", id: "request.1", success: true,
+      agentId: "agent-1", sessionId: "session-1", runtimeEpoch: f.transport.operatorEpoch,
+      data: { operation: "list", sessionId: "session-1", epoch: "core-epoch" } });
+    assert.equal((await exchange({ ...base, agentId: "other-agent" })).success, false);
+    assert.equal((await exchange({ ...base, request: { ...base.request, epoch: "stale-core-epoch" } })).success, false);
+    assert.equal((await exchange({ ...base, request: { ...base.request, operation: "arbitrary" } })).success, false);
+    assert.equal((await exchange({ ...base, request: { ...base.request, unexpected: true } })).success, false);
+    assert.equal(calls, 1);
+    assert.equal(f.transport.connected, true);
+    f.client.write('{"id":108,"type":"get_state"}\n');
+    assert.ok((await f.response(108)).success !== undefined, "main controller remained independent");
+    assert.deepEqual(f.errors, []);
+  } finally { await f.close(); }
+});
+
+test("foreground-task endpoint rejects an epoch or service replaced while execute is pending", async () => {
+  const f = await fixture();
+  try {
+    let currentService: any = { sessionId: "session-1", epoch: "epoch-1", execute: async () => ({} ) };
+    let start!: () => void, finish!: (value: unknown) => void;
+    const waiting = new Promise<void>(resolve => { start = resolve; });
+    const result = new Promise<unknown>(resolve => { finish = resolve; });
+    const identity = () => ({ agentId: "agent-1", sessionId: "session-1", runtimeEpoch: f.transport.operatorEpoch,
+      capability: f.transport.foregroundTasksCapability, service: currentService });
+    f.transport.bind({ command: async () => {}, foregroundTasksIdentity: identity,
+      foregroundTasks: async () => { start(); return result; }, attached() {}, detached() {}, error: error => f.errors.push(error) });
+    const socket = net.connect(foregroundTasksSocketPath(f.socketPath));
+    await once(socket, "connect");
+    let payload = ""; socket.on("data", chunk => { payload += chunk.toString(); });
+    socket.end(`${JSON.stringify({ v: 1, type: "foreground_tasks", id: "race", capability: f.transport.foregroundTasksCapability,
+      agentId: "agent-1", sessionId: "session-1", runtimeEpoch: f.transport.operatorEpoch,
+      request: { operation: "list", sessionId: "session-1", epoch: "epoch-1" } })}\n`);
+    await waiting;
+    currentService = { sessionId: "session-1", epoch: "epoch-2", execute: async () => ({}) };
+    finish({ private: "must not escape" });
+    await once(socket, "end");
+    assert.equal(JSON.parse(payload).success, false);
+    assert.match(JSON.parse(payload).error, /changed/);
   } finally { await f.close(); }
 });
 

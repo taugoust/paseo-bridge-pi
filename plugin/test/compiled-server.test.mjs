@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import net from 'node:net';
 import { BridgeTransport } from '../../extension/bridge-transport.ts';
 import { writePermissionGateOperatorDescriptor, writeHarnessReadOnlyDescriptor } from '../../extension/permission-gate-operator.js';
+import { foregroundTasksSocketPath, writeForegroundTasksDescriptor } from '../../extension/foreground-task-operator.js';
 import { validateHarnessReadOnlyDescriptor } from '../server/harness-readonly-transport.ts';
 
 const compilerPath = process.env.PASEO_PLUGIN_COMPILER;
@@ -26,6 +27,17 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
   let workspaceId = 'workspace';
   let changeWorkspaceAfterList = false;
   let changeEpochAfterList = false;
+  const foregroundCalls = [];
+  const task = { taskId: 'task-1', childId: 'child-1', workerEpoch: 'worker-epoch-1', groupId: 'group-1', attempt: 1, title: 'Helper', model: 'harness-test/mock:off', status: 'waiting-permission',
+    createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z', pendingInteractions: 1, canPrompt: true, canStop: true };
+  const foregroundService = { protocol: 1, sessionId: 'session', epoch: 'service-epoch', async execute(request) {
+    foregroundCalls.push(request);
+    if (request.sessionId !== this.sessionId || request.epoch !== this.epoch) throw new Error('stale service identity');
+    if (request.operation !== 'list' && (!request.target || request.target.taskId !== task.taskId || request.target.childId !== task.childId || request.target.workerEpoch !== task.workerEpoch)) throw new Error('stale worker ownership/epoch');
+    if (request.operation === 'list') return { protocol: 1, sessionId: this.sessionId, epoch: this.epoch, state: 'available', tasks: [task] };
+    if (request.operation === 'view') return { protocol: 1, sessionId: this.sessionId, epoch: this.epoch, state: 'available', view: { task, messages: [], interactions: [{ id: 'permission-1', workerEpoch: task.workerEpoch, createdAt: task.createdAt, request: { kind: 'permission', title: 'Run command?', options: ['allow', 'deny'] } }], truncated: false } };
+    return { protocol: 1, sessionId: this.sessionId, epoch: this.epoch, state: 'available', accepted: true };
+  } };
   const errors = [];
   const handlers = new Map();
   const load = name => {
@@ -43,6 +55,8 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
         status: sessionId => ({ sessionId, enabled }),
         applyMode: (sessionId, next) => ({ sessionId, enabled: (enabled = next) }),
       }) }),
+      foregroundTasksIdentity: () => ({ agentId: 'agent', sessionId: 'session', runtimeEpoch: transport.operatorEpoch, capability: transport.foregroundTasksCapability, service: foregroundService }),
+      foregroundTasks: request => foregroundService.execute(request),
       harnessReadOnly: async request => {
         if (request.method === 'status') return { available: true, sessionId: 'session', jobs: true, subagents: true };
         if (request.method === 'jobs.list') {
@@ -67,9 +81,12 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
     const readDescriptor = { version: 1, socketPath: `${transport.pipePath}.harness-readonly`,
       capability: transport.harnessReadOnlyCapability, agentId: 'agent', sessionId: 'session', runtimeEpoch: transport.operatorEpoch };
     writeHarnessReadOnlyDescriptor(join(root, '.pi', 'paseo-bridge'), readDescriptor);
+    const foregroundDescriptor = { version: 1, socketPath: foregroundTasksSocketPath(transport.pipePath), capability: transport.foregroundTasksCapability,
+      agentId: 'agent', sessionId: 'session', runtimeEpoch: transport.operatorEpoch, serviceEpoch: foregroundService.epoch };
+    writeForegroundTasksDescriptor(join(root, '.pi', 'paseo-bridge'), foregroundDescriptor);
     assert.equal(validateHarnessReadOnlyDescriptor(readDescriptor, 'agent'), true);
     assert.deepEqual((await (await import('node:fs/promises')).readdir(join(root, '.pi', 'paseo-bridge', 'operators'))).sort(),
-      [`${(await import('node:crypto')).createHash('sha256').update('agent').digest('hex')}.readonly.json`, `${(await import('node:crypto')).createHash('sha256').update('agent').digest('hex')}.json`].sort());
+      [`${(await import('node:crypto')).createHash('sha256').update('agent').digest('hex')}.foreground.json`, `${(await import('node:crypto')).createHash('sha256').update('agent').digest('hex')}.readonly.json`, `${(await import('node:crypto')).createHash('sha256').update('agent').digest('hex')}.json`].sort());
     const context = { paseo: { agents: { ref: id => ({ refresh: async () => ({ agent: { id, workspaceId, provider: 'pi' } }) }) } } };
     const invoke = async (name, input) => {
       const { contract, handler } = handlers.get(name);
@@ -93,6 +110,23 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
     const tasks = await invoke('harness_subagents_list', readTarget);
     assert.equal(tasks.items[0].taskId, 'subagent-task-111111111111111111111111');
     assert.equal(tasks.items[0].paseoAgentId, undefined);
+    const foreground = await invoke('foreground_tasks_status', target);
+    assert.equal(foreground.available, true, foreground.reason ?? '');
+    assert.equal(foreground.tasks[0].workerEpoch, 'worker-epoch-1');
+    assert.equal(foreground.tasks[0].model, 'harness-test/mock:off');
+    task.workerEpoch = '';
+    const pendingTaskList = await invoke('foreground_tasks_status', target);
+    assert.equal(pendingTaskList.available, true, 'a starting/lost task with no live worker epoch must not invalidate the whole list');
+    assert.equal(pendingTaskList.tasks[0].workerEpoch, '');
+    task.workerEpoch = 'worker-epoch-1';
+    const fgTarget = { ...target, expectedSessionId: foreground.sessionId, expectedRuntimeEpoch: foreground.runtimeEpoch };
+    const fgRequest = { operation: 'respond', target: { taskId: 'task-1', childId: 'child-1', workerEpoch: 'worker-epoch-1' },
+      requestId: '5d0a7c1c-1853-4c91-9f0c-51cc3a488657', interactionId: 'permission-1', answer: { kind: 'permission', cancelled: false, value: 'allow' } };
+    assert.equal((await invoke('foreground_tasks_control', { ...fgTarget, request: fgRequest })).accepted, true);
+    assert.equal(foregroundCalls.at(-1).requestId, fgRequest.requestId, 'the exact UI idempotency key reaches the core service');
+    await assert.rejects(invoke('foreground_tasks_control', { ...fgTarget, expectedRuntimeEpoch: '00000000-0000-4000-8000-000000000001', request: fgRequest }), /changed/);
+    await assert.rejects(invoke('foreground_tasks_control', { ...fgTarget, request: { ...fgRequest, target: { ...fgRequest.target, workerEpoch: 'expired' } } }), /ownership\/epoch/);
+    assert.equal(JSON.stringify(foreground).includes(foregroundDescriptor.capability), false);
     const status = await invoke('permission_gate_status', target);
     assert.equal(status.available, true);
     assert.equal(status.enabled, true);

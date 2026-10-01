@@ -97,13 +97,14 @@ remote command is available, so the first upgrade still needs a terminal reload
 or a fresh Pi session. No terminal keystrokes or model prompts are used to emulate
 built-in commands.
 
-## Permission prompt button in Paseo
+## Paseo controls for Pi sessions
 
-The optional [Permission Gate plugin](plugin/README.md) adds a **Prompts · On/Off**
-control to each active Pi agent's composer, plus read-only **Jobs** and **Pi subagents**
-panels for status, bounded output/reports, and verified child-chat links. These
-controls use private bridge APIs rather than slash commands, so they do not
-interrupt the chat or current turn.
+The optional [Paseo plugin](plugin/README.md) adds a **Prompts · On/Off** control,
+read-only **Jobs** and **Pi subagents** panels, and an interactive **Foreground**
+composer popover for directly owned helper tasks. The temporary popover can stream
+conversation, send user messages, answer individual pending interactions, and stop
+a helper; closing it only hides the view. These controls use private bridge APIs
+rather than slash commands, so they do not interrupt the parent chat or turn.
 Paseo 0.10 or newer and this updated bridge must be loaded. Install the plugin on
 the daemon host, as the same user running Pi:
 
@@ -115,9 +116,11 @@ No custom desktop/mobile app build is needed. The backend currently targets
 Unix daemon hosts. Only live, bridged, guard-only Permission Gate sessions are
 controllable through the permission toggle; other Pi sessions show an unavailable
 state there. The Jobs/Subagents read-only API is separate and does not require
-guard-only authority, but requires matching updated `pi-agent-extensions` APIs.
-Unsupported task backends are labeled explicitly. Viewing output never consumes
-completion notifications. Existing slash-command submission behavior is unchanged.
+guard-only authority, but requires matching updated `pi-agent-extensions` APIs. Foreground control
+requires its protocol-1 foreground-task service and uses a separate authenticated
+socket; no task-control mutation is added to those dashboards. Unsupported task
+backends are labeled explicitly. Viewing output never consumes completion
+notifications. Existing slash-command submission behavior is unchanged.
 
 ## Permission prompt mode operator API
 
