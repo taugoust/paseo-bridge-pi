@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { BridgeTransport } from '../../extension/bridge-transport.ts';
 import { foregroundTasksSocketPath, writeForegroundTasksDescriptor, removeForegroundTasksDescriptor } from '../../extension/foreground-task-operator.js';
 
@@ -76,6 +77,8 @@ test('real HeadlessForegroundManager and Pi workers integrate through the privat
   assert.ok(piTestPath, 'PAE_FOREGROUND_RUNTIME_TEST=1 requires PI_TUI_TEST_PI pointing to a raw, unguarded Pi executable');
   const rawPi = await realpath(piTestPath);
   assert.ok(rawPi.startsWith('/nix/store/'), `PI_TUI_TEST_PI must resolve to an immutable Nix-store executable, got ${rawPi}`);
+  const versionCheck = execFileSync(rawPi, ['--version'], { encoding: 'utf8' }).trim();
+  assert.equal(versionCheck, '1.0.0', `PAE_FOREGROUND_RUNTIME_TEST requires Pi 1.0.0, got ${versionCheck} from ${rawPi}`);
   await access(rawPi, constants.X_OK);
   const executableText = await readFile(rawPi, 'utf8').catch(() => '');
   if (executableText.startsWith('#!')) assert.doesNotMatch(executableText, /agentsh\\s+(?:permission-gate|wrap)|permission-gate\\s+run/i,
@@ -96,8 +99,10 @@ test('real HeadlessForegroundManager and Pi workers integrate through the privat
     extensions: [providerFile, backgroundExtension], defaultProvider: 'harness-test', defaultModel: 'mock', defaultProjectTrust: 'yes', quietStartup: true,
   }));
 
-  const oldEnv = new Map(['PI_CODING_AGENT_DIR', 'PI_TUI_WORKER_LAUNCHER', 'PI_TUI_WORKER_LAUNCH_MODE'].map(key => [key, process.env[key]]));
+  const oldEnv = new Map(['PI_CODING_AGENT_DIR', 'PI_PACKAGE_DIR', 'PI_TUI_WORKER_LAUNCHER', 'PI_TUI_WORKER_LAUNCH_MODE'].map(key => [key, process.env[key]]));
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  // Do not let the parent harness pin SDK resolution to a different Pi package.
+  delete process.env.PI_PACKAGE_DIR;
   // Explicitly override any inherited supervised/guarded launcher with the raw PI_TUI_TEST_PI selection.
   process.env.PI_TUI_WORKER_LAUNCHER = rawPi;
   process.env.PI_TUI_WORKER_LAUNCH_MODE = 'none';

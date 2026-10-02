@@ -181,6 +181,7 @@ test("topology root and native fork use real target TUIs and survive shim discon
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-topology-"));
   const socket = path.join(root, "tmux.sock");
   const env = { ...process.env, HOME: root, XDG_RUNTIME_DIR: root, PI_CODING_AGENT_DIR: path.join(root, "agent"),
+    PI_HARNESS_RUNTIME_ID: "", PI_HARNESS_PARENT_SESSION_ID: "", PI_HARNESS_TASK_ID: "", PI_HARNESS_GROUP_ID: "", PI_HARNESS_CHILD_ID: "", PI_HARNESS_ATTEMPT: "", PI_HARNESS_CONTROL_SOCKET: "",
     PI_PASEO_BRIDGE: "on", PI_PASEO_BRIDGE_NO_IMPORT: "1", PI_PASEO_BRIDGE_NO_TITLE: "1", PI_TELEMETRY: "0" };
   const tmux = (...args: string[]) => spawnSync("tmux", ["-S", socket, ...args], { env, encoding: "utf8", timeout: 5000 });
   let child;
