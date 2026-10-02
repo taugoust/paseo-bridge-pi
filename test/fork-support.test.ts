@@ -6,6 +6,7 @@ import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   createForkedSession,
+  listPaseoAgents,
   parseForkPrompt,
   resolveForkPlan,
 } from "../shim/fork-support.js";
@@ -28,6 +29,31 @@ function createSourceSession(root: string) {
   });
   return { cwd, manager, assistantId, sessionFile: manager.getSessionFile()! };
 }
+
+test("agent listing explicitly selects host and strips competing home; home-only selection works", () => {
+  const previous = { home: process.env.PASEO_HOME, host: process.env.PASEO_HOST };
+  const cli = path.join(path.dirname(new URL(import.meta.url).pathname), "fork-test-cli.mjs");
+  const setOrDelete = (key: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  };
+  try {
+    process.env.PASEO_HOME = "/not/the/target";
+    process.env.PASEO_HOST = "tcp://intended-daemon";
+    process.env.TEST_EXPECT_HOST = process.env.PASEO_HOST;
+    assert.deepEqual(listPaseoAgents({ paseoCli: process.execPath, cliArgsPrefix: [cli] }), [{ id: "fixture-agent" }]);
+    delete process.env.TEST_EXPECT_HOST;
+
+    process.env.PASEO_HOME = "/fixture/home";
+    delete process.env.PASEO_HOST;
+    process.env.TEST_EXPECT_HOME = "1";
+    assert.deepEqual(listPaseoAgents({ paseoCli: process.execPath, cliArgsPrefix: [cli] }), [{ id: "fixture-agent" }]);
+  } finally {
+    delete process.env.TEST_EXPECT_HOST;
+    delete process.env.TEST_EXPECT_HOME;
+    setOrDelete("PASEO_HOME", previous.home);
+    setOrDelete("PASEO_HOST", previous.host);
+  }
+});
 
 test("parseForkPrompt extracts Paseo history and leaves only the new prompt", () => {
   const parsed = parseForkPrompt(`<chat-history-summary>

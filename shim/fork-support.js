@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { paseoTargetOptions } from "./paseo-target.js";
 
 const CHAT_HISTORY_OPEN = "<chat-history-summary>";
 const CHAT_HISTORY_CLOSE = "</chat-history-summary>";
@@ -81,10 +82,10 @@ function readAgentMap(agentMapFile) {
 
 export function listPaseoAgents(options = {}) {
   const cli = options.paseoCli || process.env.PASEO_CLI || "paseo";
-  const hostArgs = process.env.PASEO_HOST ? ["--host", process.env.PASEO_HOST] : [];
-  const result = spawnSync(cli, ["agent", "ls", "-g", "--json", ...hostArgs], {
+  const target = paseoTargetOptions(process.env);
+  const result = spawnSync(cli, [...(options.cliArgsPrefix ?? []), "agent", "ls", "-g", "--json", ...target.args], {
     encoding: "utf8",
-    env: process.env,
+    env: target.env,
     timeout: options.timeoutMs ?? 10_000,
   });
   if (result.status !== 0) {

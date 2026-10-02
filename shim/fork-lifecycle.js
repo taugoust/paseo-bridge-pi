@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { findForkRuntimeRecord, killForkPaneForAgent } from "./tmux-fork.js";
+import { paseoTargetOptions } from "./paseo-target.js";
 
 const DEFAULT_ARCHIVE_POLL_INTERVAL_MS = 5_000;
 
@@ -15,9 +16,11 @@ export function parseAgentArchived(output) {
 export function inspectAgentArchived(agentId, options = {}) {
   const run = options.execFile ?? execFile;
   const cli = options.paseoCli ?? (process.env.PASEO_CLI?.trim() || "paseo");
+  const target = paseoTargetOptions(process.env);
   return new Promise((resolve) => {
-    run(cli, ["agent", "inspect", agentId, "--json"], {
+    run(cli, ["agent", "inspect", agentId, "--json", ...target.args], {
       encoding: "utf8",
+      env: target.env,
       timeout: 5_000,
       maxBuffer: 1024 * 1024,
     }, (error, stdout) => {
