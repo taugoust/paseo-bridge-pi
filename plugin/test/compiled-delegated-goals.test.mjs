@@ -148,8 +148,8 @@ test('desktop default-selection confirmation never retargets when that goal comp
 test('empty completed view does not accidentally display a creation form on desktop',()=>{
  const h=harness();const props={registry:{version:1,revision:0,entries:[]},colors,identity:'empty-history',locked:false,busy:false,executionAvailable:true,model:'gpt-6.1-sol',limits:{automaticTurns:3,noProgressTurns:2},post:async()=>false};
  let nodes=h.draw(props);nodes.find(node=>node.props.onLayout).props.onLayout({nativeEvent:{layout:{width:1100}}});nodes=h.draw(props);
- button(nodes,'Completed').props.onPress();nodes=h.draw(props);
- assert.equal(button(nodes,'Create'),undefined);assert.ok(nodes.some(node=>node.type==='Text'&&node.props.children==='No completed goals yet'));
+ button(nodes,'History').props.onPress();nodes=h.draw(props);
+ assert.equal(button(nodes,'Create'),undefined);assert.ok(nodes.some(node=>node.type==='Text'&&node.props.children==='No goal history yet'));
 });
 
 test('unavailable child capability disables execution without disabling metadata creation',()=>{
@@ -201,7 +201,7 @@ for (const width of [390, 1100]) test(`assignment lists are independent of statu
  const delegated=nodes.find(n=>n.type==='View'&&Array.isArray(n.props.children)&&n.props.children[0]?.props?.children==='Delegated');
  assert.ok(delegated);assert.equal(delegated.props.children[1].length,1);assert.equal(delegated.props.children[1][0].props.title,'Goal linked-paused');
  assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children==='Unassigned'));assert.ok(!nodes.some(n=>n.type==='Text'&&['Goals','Legacy parent goals'].includes(n.props.children)));
- button(nodes,'Completed').props.onPress();nodes=h.draw(props);
+ button(nodes,'History').props.onPress();nodes=h.draw(props);
  for(const id of ['done','cleared'])assert.ok(button(nodes,`Goal ${id}`));
  assert.ok(!button(nodes,'Goal linked-paused'));assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children==='Delegated'));
  button(nodes,'Current goals').props.onPress();props.registry.entries=[saved];nodes=h.draw(props);
@@ -276,7 +276,7 @@ test('all three assignment groups share ticket UI; assigned goals and history st
  for(const label of ['Start','Resume','Edit','Pause','Clear','Add task'])assert.equal(button(nodes,label),undefined);
  for(const label of ['Write-up','Timeline','Activity','Questions'])assert.ok(nodes.some(n=>n.props.accessibilityRole==='tab'&&n.props.accessibilityLabel===label));
  assert.ok(nodes.some(n=>n.props.accessibilityRole==='progressbar'&&n.props.accessibilityValue.now===1));
- button(nodes,'Back to goals').props.onPress();nodes=h.draw(props);button(nodes,'Completed').props.onPress();nodes=h.draw(props);
+ button(nodes,'Back to goals').props.onPress();nodes=h.draw(props);button(nodes,'History').props.onPress();nodes=h.draw(props);
  button(nodes,'Old assigned goal').props.onPress();nodes=h.draw(props);
  assert.ok(nodes.some(n=>n.props.children==='Recorded summary'));assert.equal(button(nodes,'Edit'),undefined);assert.deepEqual(calls,[]);
 });

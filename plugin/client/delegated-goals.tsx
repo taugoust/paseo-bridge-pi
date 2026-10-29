@@ -154,7 +154,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       {showList ? <View style={{ width: wide ? 320 : "100%", flexShrink: 0, padding: 16, gap: 16,
         ...(wide ? { borderRightWidth: 1, borderRightColor: colors.border } : {}) }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, flex: 1 }}>{history ? "Completed goals" : ""}</Text>
+          <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, flex: 1 }}>{history ? "Goal history" : ""}</Text>
           <NativeButton colors={colors} label="New goal" onPress={() => { setHistory(false); select("new"); }} disabled={locked} style={{ minHeight: 44 }} />
         </View>
         {selectionReview ? <Metadata colors={colors}>Goal saved. Select an entry to review.</Metadata> : null}
@@ -165,11 +165,11 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
               selected={selection === entry.id} onPress={() => select(entry.id)} />)}
           </View> : null)}
           {!entries.length ? <View style={{ paddingVertical: 24, gap: 8 }}>
-              <Metadata colors={colors}>{history ? "No completed goals" : "No goals yet"}</Metadata>
+              <Metadata colors={colors}>{history ? "No goal history yet" : "No goals yet"}</Metadata>
               {!history ? <Metadata colors={colors}>Save an outcome and track its checklist</Metadata> : null}
             </View> : null}
         </View>
-        <NativeButton colors={colors} label={history ? "Current goals" : "Completed"} onPress={() => { setHistory(!history); select(null); }} style={{ alignSelf: "flex-start", backgroundColor: "transparent", minHeight: 44 }} />
+        <NativeButton colors={colors} label={history ? "Current goals" : "History"} onPress={() => { setHistory(!history); select(null); }} style={{ alignSelf: "flex-start", backgroundColor: "transparent", minHeight: 44 }} />
       </View> : null}
       {showDetail ? <View style={{ flex: wide ? 1 : undefined, minWidth: 0, padding: wide ? 24 : 16, gap: 20 }}>
         {!wide ? <View style={{ alignSelf: "flex-start" }}>{button("Back to goals", () => select(null), false)}</View> : null}
@@ -212,7 +212,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           {!goal.assigned && !executionAvailable && !terminal(goal) ? <Metadata colors={colors}>Start and Resume are unavailable in this session</Metadata> : !goal.assigned && budgetExhausted && goal.status !== "active" && !terminal(goal) ? <Metadata colors={colors}>Raise or remove the token budget before resuming</Metadata> : null}
           {clearConfirm && !goal.assigned ? <Modal title="Clear goal?" open onOpenChange={setClearConfirm}><Modal.Content><View style={{ gap: 16 }}>
             <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{goal.text}</Text>
-            <Metadata colors={colors}>Its checklist and history remain in Completed</Metadata>
+            <Metadata colors={colors}>Clearing does not mark the goal complete. Its checklist remains in History.</Metadata>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {button("Keep goal", () => setClearConfirm(false), disabled)}
               {button("Clear goal", () => { void action("clear", { expectedEntryRevision: clearRevision }).then(ok => { if (ok) select(null); }); }, disabled || goal.status === "active" || terminal(goal) || goal.revision !== clearRevision)}
@@ -272,7 +272,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>Summary</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
           </View> : null}
           </View>
-        </> : <Metadata colors={colors}>{history && !entries.length ? "No completed goals yet" : "Select a goal"}</Metadata>}
+        </> : <Metadata colors={colors}>{history && !entries.length ? "No goal history yet" : "Select a goal"}</Metadata>}
       </View> : null}
     </View>
   </View>;
