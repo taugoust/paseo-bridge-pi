@@ -202,7 +202,12 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
             </View>
             <TaskBar colors={colors} tasks={goal.tasks} />
             {goal.waiting ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.waiting}</Text> : null}
-            {!goal.assigned ? renderAgent?.(goal) : null}
+            {goal.assigned ? <View style={{ gap: 4 }}>
+              {goal.waiting ? <Metadata colors={colors}>{goal.waitDeadline === undefined ? "Wait deadline unavailable in this runtime" : goal.waitDeadline !== null ? `Safety wake: ${new Date(goal.waitDeadline).toLocaleString()} (when idle)` : "Waiting for an external message or explicit resume; no safety deadline"}</Metadata> : null}
+              {goal.lastWake ? <Metadata colors={colors}>Last wake: {goal.lastWake.reason.replaceAll("_", " ")} · {new Date(goal.lastWake.at).toLocaleString()}</Metadata> : null}
+              {goal.lastTaskUpdateAt != null ? <Metadata colors={colors}>Last checklist change: {new Date(goal.lastTaskUpdateAt).toLocaleString()}</Metadata> : null}
+              {goal.lastBlocker ? <View style={{ gap: 4 }}><Metadata colors={colors}>Recorded blocker: {goal.lastBlocker.reason}</Metadata><Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.lastBlocker.evidence}</Text></View> : null}
+            </View> : renderAgent?.(goal)}
           {!goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {goal.status === "active" ? button("Pause", () => { void action("pause"); }, disabled) : button(goal.child ? "Resume" : "Start", () => { void action(goal.child ? "resume" : "start"); }, disabled || !executionAvailable || budgetExhausted)}
             {button("Edit", () => { setSelected(goal.id); setEditing(true); }, disabled || goal.status === "active")}

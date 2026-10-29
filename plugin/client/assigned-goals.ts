@@ -8,6 +8,10 @@ export type AssignedTicket = Pick<DelegatedGoal, "text" | "status" | "summary"> 
   tasks: NonNullable<NonNullable<Snapshot["goal"]>["tasks"]>;
   child?: never; revision?: number; story?: never;
   activationId?: string;
+  waitDeadline?: number | null;
+  lastTaskUpdateAt?: number | null;
+  lastWake?: NonNullable<Snapshot["goal"]>["lastWake"];
+  lastBlocker?: NonNullable<Snapshot["goal"]>["lastBlocker"];
   sourceGoalId?: string; policyRevision?: number;
   continuationLimits?: DelegatedGoal["continuationLimits"];
   effectiveLimits?: DelegatedGoal["continuationLimits"];

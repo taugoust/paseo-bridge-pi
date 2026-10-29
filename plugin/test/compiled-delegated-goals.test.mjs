@@ -314,6 +314,13 @@ test('recorded waiting is distinct from working; no assignment explanation is re
  props.limitsEditable=false;nodes=h.draw(props);assert.equal(button(nodes,'Edit limits').props.disabled,true);
 });
 
+test('assigned wait diagnostics show recorded deadlines and evidence without inventing missing data',()=>{
+ const h=harness(),g={...entry('observable','active'),waiting:'Waiting for an external completion',waitDeadline:1700000000000,lastTaskUpdateAt:1699999999000,lastWake:{at:1699999998000,reason:'user_input'},lastBlocker:{at:1699999997000,reason:'External dependency',evidence:'Recorded failure evidence',repeatedTurns:3}};
+ const props={registry:{version:1,revision:1,entries:[]},assignedGoal:g,colors,identity:'wait-diagnostics',locked:false,busy:false,executionAvailable:true,limitsEditable:false,model:null,limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);
+ for(const text of ['Safety wake:','Last wake:','Last checklist change:','Recorded failure evidence'])assert.ok(JSON.stringify(nodes).includes(text),text);
+ delete g.waitDeadline;nodes=h.draw(props);assert.ok(JSON.stringify(nodes).includes('Wait deadline unavailable in this runtime'));
+});
 test('limit RPC schemas require exact policy routing and explicit nullable limits',()=>{
  const base={operation:'start',action:'goal.limits',sessionId:'session',serviceEpoch:'11111111-1111-4111-8111-111111111111',requestId:'22222222-2222-4222-8222-222222222222',expectedGoalId:'assigned',expectedActivationId:'activation-1',expectedPolicyRevision:1,tokenBudget:null,continuationLimits:{automaticTurns:null,noProgressTurns:null}};
  assert.equal(schemas.workflowRequestSchema.safeParse(base).success,true);
