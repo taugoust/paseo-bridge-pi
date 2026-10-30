@@ -55,6 +55,11 @@ export default function(pi) {
     return { compaction: { summary: "offline synthetic summary", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, details: { offline: true } } };
   });
   pi.on("input", event => {
+    if (event.text === "idle compact model delivery fixture") {
+      writeFileSync(process.env.OFFLINE_INPUT_RECEIPT + ".idle", JSON.stringify({ source: event.source, text: event.text,
+        streamingBehavior: event.streamingBehavior ?? null, streamingBehaviorIsUndefined: event.streamingBehavior === undefined, images: event.images ?? [] }));
+      return;
+    }
     if (event.text !== "ordinary offline bridge provenance fixture" && event.text !== "offline remote image fixture") return;
     const imageProbe = event.text === "offline remote image fixture";
     writeFileSync(process.env.OFFLINE_INPUT_RECEIPT + (imageProbe ? ".images" : ""), JSON.stringify({
@@ -95,7 +100,7 @@ export default function(pi) {
       throw new Error("OFFLINE TEST MUST NOT CALL PROVIDERS");
     },
     models: ["first", "second"].map(id => ({ id, name: id, reasoning: true,
-      input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 32768, maxTokens: 1024 }))
   });
   pi.registerCommand("offline-fixture-command", { description: "metadata only", handler: async () => {} });
@@ -266,7 +271,9 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
       assert.equal(result.success, true, JSON.stringify(result));
       return result.data;
     };
-    const capabilities = JSON.parse(await readFile(path.join(temporary, "lifecycle.capabilities"), "utf8"));
+    let capabilities: any;
+    try { capabilities = JSON.parse(await readFile(path.join(temporary, "lifecycle.capabilities"), "utf8")); }
+    catch (error) { throw new Error(`fixture provider did not receive session_start: ${String(error)}\\n${stderr}`); }
     t.diagnostic(`Runtime capabilities: ${JSON.stringify(capabilities)}; stock third-party command rejection is NOT functional command parity`);
     const seedHistory = async (message: string) => {
       // Fixture setup is terminal/native-owned on stock, not a claim that the
@@ -715,14 +722,16 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
         await delay(20);
       }
     });
-    await t.test("installed idle-context-warning cancels prompt when a custom entry changes the branch during compaction", { skip: !process.env.BRIDGE_IDLE_CONTEXT_EXTENSION }, async () => {
+    await t.test("installed idle-context-warning handles notification entries during compaction without stale prompt loss", { skip: !process.env.BRIDGE_IDLE_CONTEXT_EXTENSION }, async () => {
       try { await seedHistory("/offline-fixture-seed-idle-history"); }
       catch (error) { throw new Error(`idle test history seed failed: ${String(error)}\\n${stderr}`); }
       await writeFile(path.join(agent, "idle-context-warning.json"), JSON.stringify({ idleMinutes: 1, contextPercent: 1, cheapCompactionModel: "bridge-offline/second" }));
       await writeFile(path.join(temporary, "real-idle-active"), "enabled");
       const injectBranchChange = process.env.BRIDGE_IDLE_INJECT_BRANCH_ENTRY === "1";
       if (injectBranchChange) await writeFile(path.join(temporary, "inject-custom-entry"), "during compaction");
-      const pending = bridge("prompt", { message: "idle compact model delivery fixture" });
+      const image = { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==", mimeType: "image/png" };
+      const prompt = "idle compact model delivery fixture";
+      const pending = bridge("prompt", { message: prompt, images: [image] });
       const deadline = Date.now() + 5000;
       while (!dialogs.length) {
         assert.ok(Date.now() < deadline, `installed idle-context-warning must show its mirrored decision: ${stderr}`);
@@ -733,6 +742,8 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
       assert.deepEqual(request.options, ["Cancel", "Ignore", "Compact"]);
       socket!.write(JSON.stringify({ type: "extension_ui_response", id: request.id, value: "Compact" }) + "\n");
       const response = await pending;
+      const inputReceipt = JSON.parse(await readFile(path.join(temporary, "input-receipt.json.idle"), "utf8"));
+      assert.deepEqual(inputReceipt, { source: "extension", text: prompt, streamingBehavior: null, streamingBehaviorIsUndefined: true, images: [image] }, "bridge input payload and options remain unchanged before Pi projection");
       const lifecycle = await readFile(path.join(temporary, "lifecycle"), "utf8");
       const entries = (await readFile(session, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       const compactEntry = entries.findLast(entry => entry.type === "compaction");
@@ -740,19 +751,28 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
       assert.equal(compactEntry.details?.idleContextNativeCompaction, 1, "summary was produced by the installed plugin's native compaction hook");
       assert.equal(typeof compactEntry.details?.idleContextExplicitAttempt, "string", "summary receipt is tied to this approved compaction attempt");
       assert.equal((await readFile(path.join(temporary, "lifecycle.idle.compaction.calls"), "utf8")).trim(), "summary", "actual idle plugin invoked its compaction model once");
+      assert.equal(response.success, true, JSON.stringify(response));
+      let delivered: any;
+      for (;;) {
+        try { delivered = JSON.parse(await readFile(path.join(temporary, "lifecycle.model"), "utf8")); break; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          assert.ok(Date.now() < deadline, "approved original prompt reaches the model after branch-safe compaction");
+          await delay(10);
+        }
+      }
+      assert.match(JSON.stringify(delivered.content), new RegExp(prompt), "original prompt text reaches the provider after compaction");
+      assert.equal((await readFile(path.join(temporary, "lifecycle.model.calls"), "utf8")).trim().split("\n").length, 1, "original bridge prompt follows compaction exactly once");
       if (injectBranchChange) {
-        assert.equal(response.success, false, JSON.stringify(response));
-        assert.equal(response.error, "Request was aborted: prompt cancelled.");
         assert.ok(lifecycle.includes("IDLE_CUSTOM_ENTRY_IN_COMPACTION"), lifecycle);
         const sideEntry = entries.findLast(entry => entry.type === "custom_message" && entry.customType === "offline-progress");
         assert.ok(sideEntry, "in-flight custom entry is persisted");
         assert.equal(compactEntry.parentId, sideEntry.id, "Pi appends compaction after the custom entry that moved the leaf");
-        await assert.rejects(readFile(path.join(temporary, "lifecycle.model.calls")), { code: "ENOENT" }, "original bridge prompt must not reach model on changed branch");
-      } else {
-        assert.equal(response.success, true, JSON.stringify(response));
-        const delivered = JSON.parse(await readFile(path.join(temporary, "lifecycle.model"), "utf8"));
-        assert.match(JSON.stringify(delivered.content), /idle compact model delivery fixture/);
-        assert.equal((await readFile(path.join(temporary, "lifecycle.model.calls"), "utf8")).trim().split("\n").length, 1, "original bridge prompt follows compaction exactly once");
+      }
+      const idleDeadline = Date.now() + 4000;
+      while ((await ok("get_state")).isStreaming) {
+        assert.ok(Date.now() < idleDeadline, "original model turn settles before the next transport check");
+        await delay(20);
       }
     });
     await t.test("installed idle-context-warning revokes pending admission on bridge disconnect and reconnect", { skip: !process.env.BRIDGE_IDLE_CONTEXT_EXTENSION }, async () => {
