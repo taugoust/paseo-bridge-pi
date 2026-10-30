@@ -407,7 +407,7 @@ function WorkflowsView({
 					{section === "goal" ? (
 						<>
 							<DelegatedGoals key={binding} registry={delegatedGoals ?? { version: 1, revision: 0, entries: [] }} assignedGoal={goal ?? null} completedAssigned={completedGoals} colors={colors} identity={binding ?? ""}
-								locked={locked || !!dialog || !delegatedGoals || snapshot.capabilities?.delegatedGoals !== true} busy={snapshot.busy} executionAvailable={snapshot.capabilities?.delegatedGoalExecution === true} limitsEditable={snapshot.capabilities?.goalLimitEditing === true} model="gpt-6.1-sol" limits={snapshot.limits} post={post}
+								locked={locked || !!dialog || !delegatedGoals || snapshot.capabilities?.delegatedGoals !== true} busy={snapshot.busy} executionAvailable={snapshot.capabilities?.delegatedGoalExecution === true} limitsEditable={snapshot.capabilities?.goalLimitEditing === true} model={null} limits={snapshot.limits} post={post}
                 renderAgent={entry => entry.child && data?.sessionId && data.runtimeEpoch ? <GoalAgent key={JSON.stringify([binding, entry.child])}
                   child={entry.child} sessionId={data.sessionId} runtimeEpoch={data.runtimeEpoch} host={host} agentId={agentId} workspaceId={workspaceId} theme={theme}
                   onOpenAgent={navigation?.openAgent ? id => navigation.openAgent({ agentId: id, serverId: host.id }) : undefined} /> : null} />

@@ -23,7 +23,7 @@ export function GoalQuestions({ colors, questions, identity, revision, disabled,
   const settled = questions.filter(question => question.status !== "pending");
   return <View style={{ gap: 16 }}>
     {pending.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
-    {settled.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Answered history</Text> : null}
+    {settled.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Question history</Text> : null}
     {settled.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
   </View>;
 }
@@ -55,7 +55,7 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
       return <View key={item.id} style={{ gap: 8 }}>
         {item.label ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{item.label}</Text> : null}
         <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{item.prompt}</Text>
-        {pending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Waiting for you</Text> : null}
+        {pending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Pending questionnaire response</Text> : null}
         {item.options.map(option => {
           const chosen = pending ? draft.values[item.id] === option.value : answer?.value === option.value;
           return <PressableRow key={option.value} colors={colors} accessibilityRole="radio" accessibilityLabel={option.label} accessibilityState={{ checked: chosen, disabled: !pending || locked }} aria-checked={chosen} disabled={!pending || locked}

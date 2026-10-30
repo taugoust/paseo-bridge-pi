@@ -6,6 +6,7 @@ import { Pressable, Text, View, type PressableProps, type ViewStyle } from "reac
 import { Icon } from "@getpaseo/plugin/client/ui";
 import type { PresentationColors as Colors } from "./presentation";
 import type { DelegatedGoal } from "./delegated-goals";
+import { goalRecordTime } from "./goal-history";
 
 export const goalStatusLabels: Record<DelegatedGoal["status"], string> = {
   paused: "Paused", active: "Working", blocked: "Blocked", usage_limited: "Usage limit reached",
@@ -97,6 +98,6 @@ export function StoryLog({ colors, entries, timeline = false }: { colors: Colors
   return <View>{entries.map(entry => <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", gap: timeline ? 6 : 12, paddingVertical: 6 }}>
     {timeline ? <View style={{ width: 14, alignItems: "center", paddingTop: 3 }}><Icon name={entry.kind === "created" ? "CirclePlus" : entry.kind === "completed" || entry.taskStatus === "completed" ? "CircleCheck" : entry.kind === "blocked" || entry.taskStatus === "blocked" ? "Ban" : "CircleDot"} size={12} color={entry.kind === "completed" || entry.taskStatus === "completed" ? colors.statusSuccess : entry.kind === "blocked" || entry.taskStatus === "blocked" ? colors.statusDanger : entry.kind === "started" || entry.kind === "resumed" || entry.taskStatus === "in_progress" ? goalWorkingColor : colors.foregroundMuted} /></View> : null}
     <Text selectable style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{entry.text}</Text>
-    <Text accessibilityLabel={new Date(entry.at).toLocaleString()} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 19, fontVariant: ["tabular-nums"] }}>{new Date(entry.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Text>
+    <Text accessibilityLabel={new Date(entry.at).toLocaleString()} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 19, fontVariant: ["tabular-nums"] }}>{goalRecordTime(entry.at)}</Text>
   </View>)}</View>;
 }

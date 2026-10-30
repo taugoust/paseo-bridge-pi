@@ -232,6 +232,7 @@ test('copied ticket UI renders exactly four real tabs and equal ordered task seg
 
 test('goal-bound questionnaire answers preserve exact identity and stale draft protection without permission approval',async()=>{
  const h=harness(),calls=[],g=entry('questions','active');
+ g.child={taskId:'task',childId:'child',jobId:'job',attempt:1};
  const question={id:'q1',revision:3,at:1700000000000,workerEpoch:'worker-epoch',status:'pending',request:{kind:'questionnaire',questions:[{id:'map',prompt:'Choose a map',options:[{value:'mapbox',label:'Mapbox'}],allowOther:true}]}};
  g.story={version:1,timeline:[],activity:[],questions:[question]};
  const props={registry:{version:1,revision:1,entries:[g]},colors,identity:'question-draft',locked:false,busy:false,executionAvailable:true,model:null,limits:{},post:async fields=>{calls.push(fields);return false;}};
@@ -321,6 +322,35 @@ test('assigned wait diagnostics show recorded deadlines and evidence without inv
  for(const text of ['Safety wake:','Last wake:','Last checklist change:','Recorded failure evidence'])assert.ok(JSON.stringify(nodes).includes(text),text);
  delete g.waitDeadline;nodes=h.draw(props);assert.ok(JSON.stringify(nodes).includes('Wait deadline unavailable in this runtime'));
 });
+test('stopped questionnaires stay readable but cannot submit or cancel a dead waiter',async()=>{
+ for(const status of ['paused','blocked','usage_limited','budget_limited','complete','cleared']){
+  const h=harness(),g=entry(`stopped-${status}`,status),calls=[];
+  g.child={taskId:'task',childId:'child',jobId:'job',attempt:1};
+  g.story={version:1,timeline:[],activity:[],questions:[{id:'q',revision:1,at:1,workerEpoch:'old',status:'pending',request:{kind:'questionnaire',questions:[{id:'x',prompt:'Pick?',options:[{value:'yes',label:'Yes'}],allowOther:false}]}}]};
+  const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async f=>{calls.push(f);return false;}};
+  let nodes=h.draw(props);if(['complete','cleared'].includes(status)){button(nodes,'History').props.onPress();nodes=h.draw(props);}button(nodes,g.text).props.onPress();nodes=h.draw(props);nodes.find(n=>n.props.accessibilityLabel==='Questions').props.onPress();nodes=h.draw(props);
+  assert.ok(nodes.some(n=>n.props.children==='Pick?'));
+  for(const label of ['Submit answers','Cancel questions']){const b=button(nodes,label);assert.ok(!b||b.props.disabled);b?.props.onPress();}
+  assert.ok(!JSON.stringify(nodes).includes('Waiting for you'));await tick();assert.deepEqual(calls,[]);
+ }
+});
+
+test('task capacity disables Add and preserves an open draft when the final slot fills',()=>{
+ const h=harness(),g=entry('capacity');g.tasks=Array.from({length:49},(_,i)=>({id:`t${i}`,text:`Task ${i}`,status:'pending'}));
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);button(nodes,'Add task').props.onPress();nodes=h.draw(props);textbox(nodes,'Subtask').props.onChangeText('Keep this draft');nodes=h.draw(props);assert.equal(button(nodes,'Save task').props.disabled,false);
+ g.tasks.push({id:'last',text:'Concurrent task',status:'pending'});g.revision++;nodes=h.draw(props);assert.equal(button(nodes,'Save task').props.disabled,true);assert.equal(textbox(nodes,'Subtask').props.value,'Keep this draft');
+ button(nodes,'Cancel task').props.onPress();nodes=h.draw(props);assert.equal(button(nodes,'Add task').props.disabled,true);
+});
+
+test('history renders calendar day and model is only an authenticated child launch value',()=>{
+ const h=harness(),g=entry('truthful');g.child={taskId:'task',childId:'child',jobId:'job',attempt:1,model:'provider/actual-role-model'};
+ g.story={version:1,timeline:[{id:'old',at:new Date(2020,0,2,9).getTime(),kind:'created',text:'Old event'}],activity:[]};
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,model:'false-default',limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);assert.ok(JSON.stringify(nodes).includes('provider/actual-role-model'));assert.ok(!JSON.stringify(nodes).includes('false-default'));
+ nodes.find(n=>n.props.accessibilityLabel==='Timeline').props.onPress();nodes=h.draw(props);assert.ok(nodes.some(n=>n.type==='Text'&&typeof n.props.children==='string'&&n.props.children.includes('2020')));
+});
+
 test('limit RPC schemas require exact policy routing and explicit nullable limits',()=>{
  const base={operation:'start',action:'goal.limits',sessionId:'session',serviceEpoch:'11111111-1111-4111-8111-111111111111',requestId:'22222222-2222-4222-8222-222222222222',expectedGoalId:'assigned',expectedActivationId:'activation-1',expectedPolicyRevision:1,tokenBudget:null,continuationLimits:{automaticTurns:null,noProgressTurns:null}};
  assert.equal(schemas.workflowRequestSchema.safeParse(base).success,true);

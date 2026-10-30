@@ -26,7 +26,7 @@ export const delegatedGoalEntrySchema = z.object({
 	id: z.string().uuid(), revision: z.number().int().positive(), text: z.string().min(1).max(4000),
 	status: z.enum(["paused", "active", "blocked", "usage_limited", "budget_limited", "complete", "cleared"]),
 	tasks: z.array(z.object({ id: z.string().max(128), text: z.string().max(503), status: z.enum(["pending", "in_progress", "completed", "blocked"]) }).strict()).max(50),
-	child: z.object({ taskId: z.string().max(128), childId: z.string().max(128), jobId: z.string().max(128), attempt: z.number().int().positive() }).strict().nullable(),
+	child: z.object({ taskId: z.string().max(128), childId: z.string().max(128), jobId: z.string().max(128), attempt: z.number().int().positive(), model: z.string().min(1).max(512).optional() }).strict().nullable(),
 	tokenBudget: z.number().int().positive().max(1_000_000).nullable(), tokensUsed: z.number().nonnegative(),
 	continuationLimits: continuationLimitsSchema.optional(),
 	automaticTurns: z.number().int().nonnegative(), noProgressTurns: z.number().int().nonnegative(),

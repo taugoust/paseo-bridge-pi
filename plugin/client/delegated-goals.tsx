@@ -131,6 +131,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   const disabled = locked || busy;
   const budgetExhausted = !!goal && goal.tokenBudget != null && goal.tokensUsed !== undefined && goal.tokensUsed >= goal.tokenBudget;
   const taskDraft = taskText.trim();
+  const taskCapacity = !!goal && goal.tasks.length >= 50;
   const duplicateTask = !!goal && !!taskDraft && goal.tasks.some(task => task.text.trim() === taskDraft);
   const showDetail = wide || selection !== null;
   const showList = wide || selection === null;
@@ -143,7 +144,8 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   }
   async function action(name: string, fields: Record<string, unknown> = {}) {
     if (goal?.assigned || disabled || ((name === "start" || name === "resume") && (!executionAvailable || budgetExhausted))) return false;
-    if (name === "add_task" && (!goal || !taskDraft || duplicateTask || goal.status === "active" || terminal(goal))) return false;
+    if (name === "answer" && (!goal?.child || goal.status !== "active")) return false;
+    if (name === "add_task" && (!goal || taskCapacity || !taskDraft || duplicateTask || goal.status === "active" || terminal(goal))) return false;
     if (goal) setSelected(goal.id);
     return !!(await post({ operation: "start", action: `goals.${name}`, expectedGoalId: goal?.id ?? null,
       ...(name === "limits" ? {} : { expectedEntryRevision: goal?.revision }), ...fields }));
@@ -231,7 +233,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
             <Metadata colors={colors}>Automatic responses: {goal.automaticTurns ?? "Unavailable"} / {goal.assigned && goal.automaticTurns === undefined ? "Unavailable" : (goal.assigned ? goal.effectiveLimits?.automaticTurns : goal.continuationLimits?.automaticTurns) ?? limits.automaticTurns ?? "Unlimited"}</Metadata>
             <Metadata colors={colors}>Tokens: {goal.tokensUsed?.toLocaleString() ?? "Unavailable"} / {goal.tokenBudget === undefined ? "Unavailable" : goal.tokenBudget?.toLocaleString() ?? "Unlimited"}</Metadata>
             <Metadata colors={colors}>No-progress responses: {goal.noProgressTurns ?? "Unavailable"} / {goal.assigned && goal.noProgressTurns === undefined ? "Unavailable" : (goal.assigned ? goal.effectiveLimits?.noProgressTurns : goal.continuationLimits?.noProgressTurns) ?? limits.noProgressTurns ?? "Unlimited"}</Metadata>
-            {!goal.assigned ? <Metadata colors={colors}>Model: {model ?? "Unavailable"}</Metadata> : null}
+            {!goal.assigned && goal.child?.model ? <Metadata colors={colors}>Launch model: {goal.child.model}</Metadata> : null}
           </View>
           {editingLimits && !terminal(goal) ? <GoalForm key={`${identity}/limits/${goal.id}`} draftKey={`${identity}/limits/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits} limitsOnly
             onCancel={() => setEditingLimits(false)} onSubmit={async (_objective, tokenBudget, openedRevision, continuationLimits) => {
@@ -250,7 +252,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           {tab === "timeline" ? <StoryLog colors={colors} entries={goal.story?.timeline ?? []} timeline /> : null}
           {tab === "activity" ? <StoryLog colors={colors} entries={goal.story?.activity ?? []} /> : null}
           {tab === "questions" && goal.assigned ? <Metadata colors={colors}>No recorded questions available for this assigned goal</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision}
-            disabled={disabled || terminal(goal)} onAnswer={(question, answer, openedRevision) => action("answer", {
+            disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child} onAnswer={(question, answer, openedRevision) => action("answer", {
               expectedEntryRevision: openedRevision, questionId: question.id, questionRevision: question.revision, workerEpoch: question.workerEpoch, answer,
             })} /> : null}
           {tab === "write-up" ? <View style={{ gap: 12, padding: 14, borderRadius: 8, backgroundColor: colors.surface0 }}>
@@ -266,12 +268,12 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
               {task.status === "blocked" ? <Text style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 19 }}>Blocked</Text> : null}
             </View>) : <Metadata colors={colors}>{goal.status === "active" ? "No tasks reported yet" : "No tasks yet"}</Metadata>}
             {goal.tasks.length > 5 ? button(expanded[goal.id] ? "Show fewer tasks" : `Show all ${goal.tasks.length} tasks`, () => setExpanded({ ...expanded, [goal.id]: !expanded[goal.id] }), false) : null}
-            {!goal.assigned && !terminal(goal) && goal.status !== "active" ? button(addingTask ? "Cancel task" : "Add task", () => { setSelected(goal.id); setAddingTask(!addingTask); setTaskText(""); }, disabled) : null}
+            {!goal.assigned && !terminal(goal) && goal.status !== "active" ? button(addingTask ? "Cancel task" : "Add task", () => { setSelected(goal.id); setAddingTask(!addingTask); setTaskText(""); }, disabled || (!addingTask && taskCapacity)) : null}
             {addingTask && !goal.assigned ? <View style={{ gap: 8 }}>
               <TextInput accessibilityLabel="Subtask" value={taskText} onChangeText={setTaskText} editable={!disabled && goal.status !== "active" && !terminal(goal)} maxLength={503} placeholder="Describe a task" placeholderTextColor={colors.foregroundMuted}
                 style={{ minHeight: 44, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 }} />
-              {duplicateTask ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>That task is already in this goal</Metadata> : null}
-              {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
+              {taskCapacity ? <Metadata colors={colors}>50-task limit reached</Metadata> : duplicateTask ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>That task is already in this goal</Metadata> : null}
+              {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || taskCapacity || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
             </View> : null}
           </View>
           {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>Summary</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
