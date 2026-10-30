@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Steve Castaneda. See ../licenses/progress-MIT.txt.
 // Unlike Progress's Copy controls, these submit the existing questionnaire DTO
 // to the goal-bound workflow service. Permission requests are not accepted here.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { z } from "zod";
@@ -15,8 +15,9 @@ export type GoalQuestion = z.infer<typeof goalQuestionSchema>;
 export type GoalAnswer = z.infer<typeof questionnaireAnswerSchema>;
 type Draft = { revision: number; values: Record<string, string> };
 const drafts = new Map<string, Draft>();
-export function GoalQuestions({ colors, questions, identity, revision, disabled, onAnswer }: {
+export function GoalQuestions({ colors, questions, identity, revision, disabled, onAnswer, renderAttachments }: {
   colors: PresentationColors; questions: GoalQuestion[]; identity: string; revision: number; disabled: boolean;
+  renderAttachments?: (question: GoalQuestion) => ReactNode;
   onAnswer(question: GoalQuestion, answer: GoalAnswer, openedRevision: number): Promise<boolean>;
 }) {
   const { t } = useGoalText();
@@ -25,14 +26,15 @@ export function GoalQuestions({ colors, questions, identity, revision, disabled,
   const pending = questions.filter(question => question.status === "pending");
   const settled = questions.filter(question => question.status !== "pending");
   return <View style={{ gap: 16 }}>
-    {pending.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
+    {pending.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer, renderAttachments }} />)}
     {settled.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{t("Question history")}</Text> : null}
-    {[...settled].reverse().slice(0, historyLimit).map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
+    {[...settled].reverse().slice(0, historyLimit).map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer, renderAttachments }} />)}
     {settled.length > historyLimit ? <NativeButton colors={colors} label="Show older questions" onPress={() => setHistoryLimit(historyLimit + 10)} /> : null}
   </View>;
 }
-function QuestionCard({ colors, question, identity, revision, disabled, onAnswer }: {
+function QuestionCard({ colors, question, identity, revision, disabled, onAnswer, renderAttachments }: {
   colors: PresentationColors; question: GoalQuestion; identity: string; revision: number; disabled: boolean;
+  renderAttachments?: (question: GoalQuestion) => ReactNode;
   onAnswer(question: GoalQuestion, answer: GoalAnswer, openedRevision: number): Promise<boolean>;
 }) {
   const { t, time } = useGoalText();
@@ -82,6 +84,7 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
         {!pending && answer?.wasCustom ? <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{answer.value}</Text> : null}
       </View>;
     })}
+    {renderAttachments?.(question)}
     {stale ? <View style={{ gap: 8 }}><Metadata colors={colors} alert>{t("This goal changed. Review the latest question before answering.")}</Metadata>
       <NativeButton colors={colors} label="Review latest question" onPress={() => save({ revision, values: {} })} disabled={disabled || sending} /></View> : null}
     {pending ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>

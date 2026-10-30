@@ -15,6 +15,7 @@ import { worktreeLinkKeyboardProps } from "../shared/worktree-link";
 import { DelegatedGoals } from "./delegated-goals";
 import { GoalAgent } from "./goal-agent";
 import { GoalReview } from "./goal-review";
+import { GoalQuestionAttachments } from "./goal-question-attachments";
 import {
 	workflowsStatusRpc,
 	workflowsControlRpc,
@@ -410,6 +411,10 @@ function WorkflowsView({
 						<>
 							<DelegatedGoals key={binding} registry={delegatedGoals ?? { version: 1, revision: 0, entries: [] }} assignedGoal={goal ?? null} completedAssigned={completedGoals} colors={colors} identity={binding ?? ""}
 								locked={locked || !!dialog || !delegatedGoals || snapshot.capabilities?.delegatedGoals !== true} busy={snapshot.busy} executionAvailable={snapshot.capabilities?.delegatedGoalExecution === true} limitsEditable={snapshot.capabilities?.goalLimitEditing === true} planningAvailable={snapshot.capabilities?.goalPlanning === true} model={null} limits={snapshot.limits} post={post}
+                renderQuestionAttachments={(entry,question)=><GoalQuestionAttachments key={`${binding}/${entry.id}/${question.id}`} goal={entry} question={question} colors={colors} disabled={locked||snapshot.busy} available={snapshot.capabilities?.goalReview===true} preview={(referenceId,questionTarget)=>{
+                  if(locked||!data.sessionId||!data.runtimeEpoch)return Promise.reject(new Error("Session unavailable"));
+                  return review({agentId,workspaceId,sessionId:data.sessionId,serviceEpoch:snapshot.serviceEpoch,expectedRuntimeEpoch:data.runtimeEpoch,expectedGoalId:entry.id,expectedEntryRevision:entry.revision,referenceId,question:questionTarget});
+                }} />}
                 renderReview={entry => <GoalReview key={`${binding}/${entry.id}`} goal={entry} colors={colors} disabled={locked || snapshot.busy} available={snapshot.capabilities?.goalReview === true}
                   register={fields => post({ operation: "start", action: "goals.reference", expectedGoalId: entry.id, ...fields }).then(Boolean)}
                   preview={(referenceId, expectedEntryRevision) => {

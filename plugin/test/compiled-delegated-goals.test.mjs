@@ -13,7 +13,7 @@ const {compilePlugin}=await import(pathToFileURL(resolve(compilerPath)));
 const fixture=await mkdtemp(resolve(tmpdir(),'delegated-goals-ui-'));
 after(()=>rm(fixture,{recursive:true,force:true}));
 for(const directory of ['client','shared']) await cp(fileURLToPath(new URL(`../${directory}`,import.meta.url)),resolve(fixture,directory),{recursive:true});
-await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals } from "./client/delegated-goals"; export { goalAgentRoute } from "./shared/goal-agent"; export { GoalReview } from "./client/goal-review";');
+await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals } from "./client/delegated-goals"; export { goalAgentRoute } from "./shared/goal-agent"; export { GoalReview } from "./client/goal-review"; export { GoalQuestionAttachments } from "./client/goal-question-attachments";');
 await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema }; }');
 const {clientBundle,serverBundle}=await compilePlugin({client:resolve(fixture,'index.client.tsx'),server:resolve(fixture,'index.server.ts')});
 const schemas=(0,eval)(serverBundle)(name=>name==='@getpaseo/plugin'?{defineRpc:value=>value}:require(name)).default();
@@ -36,7 +36,7 @@ function harness(options={}) {
   if(name==='@getpaseo/plugin/client/ui')return {Icon:'Icon',SettingsSection:'SettingsSection',SettingsCard:'SettingsCard',SettingsAction:'SettingsAction',Modal:Object.assign(props=>jsx('Modal',props),{Content:'ModalContent'})};
   return require(name);
  };
- const {DelegatedGoals,goalAgentRoute,GoalReview}=(0,eval)(clientBundle)(load);
+ const {DelegatedGoals,goalAgentRoute,GoalReview,GoalQuestionAttachments}=(0,eval)(clientBundle)(load);
  function walk(node,path='root') {
   if(Array.isArray(node))return node.flatMap((item,index)=>walk(item,`${path}/${index}`));
   if(!node||typeof node!=='object')return [];
@@ -45,7 +45,7 @@ function harness(options={}) {
   }
   return [node,...walk(node.props.children,`${path}/children`)];
  }
- return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),remount:()=>states.clear(),setLocale:next=>{locale=next;},goalAgentRoute};
+ return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),drawAttachments:props=>walk({type:GoalQuestionAttachments,props}),remount:()=>states.clear(),setLocale:next=>{locale=next;},goalAgentRoute};
 }
 const entry=(id,status='paused')=>({id,revision:2,text:`Goal ${id}`,status,tasks:[],child:null,tokenBudget:null,tokensUsed:0,automaticTurns:0,noProgressTurns:0,summary:null,waiting:null});
 const button=(nodes,label)=>nodes.find(node=>node.type==='Pressable'&&node.props.accessibilityLabel===label);
@@ -398,7 +398,7 @@ test('optional public host localization preserves drafts/authored content and ol
 test('planning controls submit exact identities, retain evidence and reject stale open drafts',async()=>{
  const h=harness(),calls=[],g=entry('planning');g.tasks=[{id:'a',text:'First task',status:'pending'},{id:'b',text:'Second task',status:'pending'}];g.planning={dependencies:[],blockers:[{id:'recorded',at:1,reason:'External service',evidence:'Actual evidence'}]};
  const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,planningAvailable:true,locked:false,busy:false,executionAvailable:true,limits:{},post:async fields=>{calls.push(fields);return false;}};
- let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);button(nodes,'Planning · 1 recorded blockers').props.onPress();nodes=h.draw(props);button(nodes,'Edit dependencies').props.onPress();nodes=h.draw(props);nodes.find(n=>n.props.accessibilityRole==='checkbox').props.onPress();nodes=h.draw(props);button(nodes,'Save planning').props.onPress();await tick();assert.equal(calls[0].action,'goals.dependencies');assert.equal(calls[0].expectedGoalId,g.id);assert.equal(calls[0].expectedEntryRevision,2);assert.deepEqual(calls[0].waitsFor,['b']);
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);button(nodes,'Planning · 1 recorded blocker').props.onPress();nodes=h.draw(props);button(nodes,'Edit dependencies').props.onPress();nodes=h.draw(props);nodes.find(n=>n.props.accessibilityRole==='checkbox').props.onPress();nodes=h.draw(props);button(nodes,'Save planning').props.onPress();await tick();assert.equal(calls[0].action,'goals.dependencies');assert.equal(calls[0].expectedGoalId,g.id);assert.equal(calls[0].expectedEntryRevision,2);assert.deepEqual(calls[0].waitsFor,['b']);
  g.revision++;nodes=h.draw(props);assert.equal(button(nodes,'Save planning').props.disabled,true);assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children==='Actual evidence'));button(nodes,'Clear blocker: External service').props.onPress();await tick();assert.equal(calls[1].action,'goals.blocker.clear');assert.equal(calls[1].blockerId,'recorded');assert.equal(calls[1].expectedEntryRevision,3);
 });
 
@@ -407,6 +407,15 @@ test('planning wire contracts reject cross-goal cycles and mixed-action payloads
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse(base).success,true);
  for(const dependencies of [[{taskId:'a',waitsFor:['foreign']}],[{taskId:'a',waitsFor:['a']}],[{taskId:'a',waitsFor:['b']},{taskId:'b',waitsFor:['a']}]])assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...base,planning:{dependencies,blockers:[]}}).success,false);
  const request={operation:'start',action:'goals.dependencies',sessionId:'s',serviceEpoch:base.id,requestId:base.id,expectedGoalId:base.id,expectedEntryRevision:2,taskId:'a',waitsFor:['b']};assert.equal(schemas.workflowRequestSchema.safeParse(request).success,true);assert.equal(schemas.workflowRequestSchema.safeParse({...request,action:'goals.start'}).success,false);assert.equal(schemas.workflowRequestSchema.safeParse({...request,blockerReason:'wrong action'}).success,false);
+});
+
+test('question attachment controls use exact registered scope and discard late preview content',async()=>{
+ const h=harness(),g=entry('attachments');g.child={taskId:'task',childId:'child',jobId:'job',attempt:1};g.review=[{id:'ref',goalId:g.id,taskId:'task',childId:'child',attempt:1,workerEpoch:'epoch',questionId:'q',title:'Evidence',role:'source',kind:'text',at:1,target:'spec.md'}];
+ const question={id:'q',revision:2,workerEpoch:'epoch',attachmentIds:['ref']},calls=[];let resolve;
+ const props={goal:g,question,colors,disabled:false,available:true,preview:async(id,target)=>{calls.push({id,target});return new Promise(done=>resolve=done);}};
+ let nodes=h.drawAttachments(props);button(nodes,'Review Evidence').props.onPress();await tick();assert.deepEqual(calls[0],{id:'ref',target:{questionId:'q',questionRevision:2,workerEpoch:'epoch'}});
+ question.revision++;nodes=h.drawAttachments(props);resolve({kind:'text',text:'Late attachment bytes'});await tick();nodes=h.drawAttachments(props);assert.ok(!nodes.some(n=>n.type==='Text'&&n.props.children==='Late attachment bytes'));
+ g.review[0].questionId='other';nodes=h.drawAttachments(props);assert.equal(button(nodes,'Review Evidence').props.disabled,true);button(nodes,'Review Evidence').props.onPress();await tick();assert.equal(calls.length,1);
 });
 
 test('limit RPC schemas require exact policy routing and explicit nullable limits',()=>{

@@ -100,7 +100,7 @@ export function createWorkflowsHandlers(
       await target(input, context);
       const d = await read(input.agentId);
       if (!validateAccountControlsDescriptor(d, input.agentId) || d.runtimeEpoch !== input.expectedRuntimeEpoch || d.sessionId !== input.sessionId || d.serviceEpoch !== input.serviceEpoch) throw new Error("Goal review session changed; refresh");
-      const result = await call(d, { operation: "review", sessionId: input.sessionId, serviceEpoch: input.serviceEpoch, expectedGoalId: input.expectedGoalId, expectedEntryRevision: input.expectedEntryRevision, referenceId: input.referenceId }) as { sessionId?: string; serviceEpoch?: string; preview?: unknown };
+      const result = await call(d, { operation: "review", sessionId: input.sessionId, serviceEpoch: input.serviceEpoch, expectedGoalId: input.expectedGoalId, expectedEntryRevision: input.expectedEntryRevision, referenceId: input.referenceId, ...(input.question ? {question:input.question} : {}) }) as { sessionId?: string; serviceEpoch?: string; preview?: unknown };
       await recheck(input, context, d);
       if (result.sessionId !== d.sessionId || result.serviceEpoch !== d.serviceEpoch) throw new Error("Goal review identity changed");
       return goalReviewPreviewSchema.parse(result.preview);

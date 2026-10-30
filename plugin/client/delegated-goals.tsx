@@ -6,7 +6,7 @@ import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { Metadata, type PresentationColors } from "./presentation";
 import { GoalButton as NativeButton, useGoalText } from "./goal-language";
 import { openGoalForm } from "./goal-form";
-import { GoalQuestions } from "./goal-questions";
+import { GoalQuestions, type GoalQuestion } from "./goal-questions";
 import { assignedTickets, type AssignedTicket } from "./assigned-goals";
 import { GoalRecordedDetails } from "./goal-recorded-details";
 import { GoalPlanning } from "./goal-planning";
@@ -23,6 +23,7 @@ type Props = {
   registry: DelegatedGoalRegistry;
   renderAgent?: (goal: DelegatedGoal) => ReactNode;
   renderReview?: (goal: DelegatedGoal) => ReactNode;
+  renderQuestionAttachments?: (goal: DelegatedGoal, question: GoalQuestion) => ReactNode;
   colors: PresentationColors;
   identity: string;
   locked: boolean;
@@ -108,7 +109,7 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
   </View>;
 }
 
-export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, planningAvailable = false, model, limits, post, renderAgent, renderReview }: Props) {
+export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, planningAvailable = false, model, limits, post, renderAgent, renderReview, renderQuestionAttachments }: Props) {
   const { t, time } = useGoalText();
   const allEntries: Ticket[] = [...registry.entries, ...assignedTickets(assignedGoal, completedAssigned)];
   const [width, setWidth] = useState(0);
@@ -260,7 +261,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           ]} />
           {tab === "timeline" ? <StoryLog key={`${identity}/${goal.id}/timeline`} identity={`${identity}/${goal.id}/timeline`} colors={colors} entries={goal.story?.timeline ?? []} truncated={goal.story?.coverage?.timelineTruncated} timeline /> : null}
           {tab === "activity" ? <StoryLog key={`${identity}/${goal.id}/activity`} identity={`${identity}/${goal.id}/activity`} colors={colors} entries={goal.story?.activity ?? []} truncated={goal.story?.coverage?.activityTruncated} /> : null}
-          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>{t("No recorded questions available for this assigned goal")}</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision}
+          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>{t("No recorded questions available for this assigned goal")}</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision} renderAttachments={question=>renderQuestionAttachments?.(goal,question)}
             disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child || goal.observation?.state === "unavailable"} onAnswer={(question, answer, openedRevision) => action("answer", {
               expectedEntryRevision: openedRevision, questionId: question.id, questionRevision: question.revision, workerEpoch: question.workerEpoch, answer,
             })} /> : null}

@@ -9,6 +9,7 @@ const continuationLimitsSchema = z.object({
 export const goalQuestionSchema = z.object({
   id: z.string().min(1).max(128), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), at: z.number().int().nonnegative().max(8640000000000000),
   workerEpoch: z.string().min(1).max(128), status: z.enum(["pending", "answered", "cancelled"]),
+  attachmentIds: z.array(z.string().uuid()).max(8).refine(ids => new Set(ids).size === ids.length).optional(),
   request: questionnaireInputSchema, answer: questionnaireAnswerSchema.optional(), answeredAt: z.number().int().nonnegative().max(8640000000000000).optional(),
 }).strict();
 // Optional for legacy runtimes; only durable producer records belong here.
@@ -24,8 +25,10 @@ export const goalStorySchema = z.object({
 export const goalReviewReferenceSchema = z.object({
   id: z.string().uuid(), goalId: z.string().uuid(), taskId: z.string().min(1).max(128), childId: z.string().min(1).max(128), attempt: z.number().int().positive(),
   title: z.string().min(1).max(160), role: z.enum(["source", "deliverable"]), kind: z.enum(["text", "image", "link"]), at: z.number().int().nonnegative(), target: z.string().min(1).max(4096),
+  workerEpoch: z.string().min(1).max(128).optional(), questionId: z.string().min(1).max(128).optional(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), bytes: z.number().int().nonnegative().max(256 * 1024).optional(), mime: z.enum(["text/plain", "image/png"]).optional(),
 }).strict().superRefine((ref, context) => {
+  if(ref.questionId!==undefined&&ref.workerEpoch===undefined)context.addIssue({code:"custom",message:"Question references require a worker epoch"});
   if (ref.kind === "link") {
     let safe = false;try { const url = new URL(ref.target);safe = url.protocol === "https:" && !url.username && !url.password; } catch {}
     if (!safe || ref.sha256 !== undefined || ref.bytes !== undefined || ref.mime !== undefined) context.addIssue({ code: "custom", message: "Invalid review link" });
@@ -42,7 +45,7 @@ export const goalPlanningSchema = z.object({
 }).strict();
 export const delegatedGoalEntrySchema = z.object({
   planning: goalPlanningSchema.optional(),
-  review: z.array(goalReviewReferenceSchema).max(16).optional(),
+  review: z.array(goalReviewReferenceSchema).max(16).optional(), reviewTruncated: z.boolean().optional(),
   diagnostics: z.object({
     waitDeadline: z.number().nonnegative().nullable().optional(), lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
     lastWake: z.object({ at: z.number().nonnegative(), reason: z.enum(["deadline", "custom_message", "user_input", "explicit_resume"]), customType: z.string().max(128).optional() }).strict().nullable().optional(),
@@ -61,6 +64,7 @@ export const delegatedGoalEntrySchema = z.object({
 	summary: z.string().max(6000).nullable(), waiting: z.string().max(1000).nullable(),
 }).strict().superRefine((entry, context) => {
   if (entry.review?.some(ref => ref.goalId !== entry.id)) context.addIssue({ code: "custom", message: "Review reference belongs to another goal" });
+  for(const question of entry.story?.questions??[])for(const id of question.attachmentIds??[]){const ref=entry.review?.find(ref=>ref.id===id);if(!ref ? entry.reviewTruncated!==true : ref.questionId!==question.id||ref.workerEpoch!==question.workerEpoch)context.addIssue({code:"custom",message:"Question attachment ownership changed"});}
   if (entry.planning) {
     const ids = new Set(entry.tasks.map(task => task.id)), edges = new Map<string, string[]>();
     for (const edge of entry.planning.dependencies) {
@@ -356,6 +360,6 @@ export const workflowsControlRpc = defineRpc({
 		})
 		.strict(),
 });
-export const workflowsReviewRpc = defineRpc({ name: "workflows_review", input: z.object({ ...target, expectedRuntimeEpoch: z.string().uuid(), sessionId: id, serviceEpoch: z.string().uuid(), expectedGoalId: z.string().uuid(), expectedEntryRevision: z.number().int().positive(), referenceId: z.string().uuid() }).strict(), output: goalReviewPreviewSchema });
+export const workflowsReviewRpc = defineRpc({ name: "workflows_review", input: z.object({ ...target, expectedRuntimeEpoch: z.string().uuid(), sessionId: id, serviceEpoch: z.string().uuid(), expectedGoalId: z.string().uuid(), expectedEntryRevision: z.number().int().positive(), referenceId: z.string().uuid(), question: z.object({questionId:z.string().min(1).max(128),questionRevision:z.number().int().positive(),workerEpoch:z.string().min(1).max(128)}).strict().optional() }).strict(), output: goalReviewPreviewSchema });
 export type WorkflowSnapshot = z.infer<typeof workflowSnapshotSchema>;
 export type WorkflowRequest = z.infer<typeof workflowRequestSchema>;

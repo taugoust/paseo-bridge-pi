@@ -22,14 +22,14 @@ export function GoalPlanning({ goal, colors, disabled, available, post }: {
   function edit(next: "dependencies" | "blocker") { setMode(next);setRevision(goal.revision);setError(undefined);setTaskId(next === "dependencies" ? goal.tasks[0]?.id ?? "" : "");setWaitsFor(next === "dependencies" ? dependencies.find(edge => edge.taskId === goal.tasks[0]?.id)?.waitsFor ?? [] : []);setReason("");setEvidence(""); }
   async function send(action: string, fields: Record<string, unknown>) {
     if (locked) return;setBusy(true);setError(undefined);
-    try { if (await post(action,fields)) setMode(undefined);else setError(t("Planning changed or was not saved. Review and retry.")); }
-    catch { setError(t("Planning changed or was not saved. Review and retry.")); }
+    try { if (await post(action,fields)) setMode(undefined);else setError("Planning changed or was not saved. Review and retry."); }
+    catch { setError("Planning changed or was not saved. Review and retry."); }
     finally { setBusy(false); }
   }
   if (!available && !planning) return null;
   const input = { minHeight: 44, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 } as const;
   return <View style={{ gap: 10 }}>
-    <NativeButton colors={colors} label={expanded ? "Hide planning" : activeBlockers.length ? t("Planning · {{count}} recorded blockers", {count:activeBlockers.length}) : "Planning"} onPress={() => setExpanded(!expanded)} />
+    <NativeButton colors={colors} label={expanded ? "Hide planning" : activeBlockers.length ? t(activeBlockers.length===1 ? "Planning · {{count}} recorded blocker" : "Planning · {{count}} recorded blockers", {count:activeBlockers.length}) : "Planning"} onPress={() => setExpanded(!expanded)} />
     {expanded ? <View style={{ gap: 12 }}>
       <Metadata colors={colors}>{t("Advisory dependencies and recorded blockers do not start, pause or complete work.")}</Metadata>
       {dependencies.map(edge => <View key={edge.taskId} style={{ gap: 4 }}><Text style={{ color: colors.foreground, fontSize: 13 }}>{goal.tasks.find(task => task.id === edge.taskId)?.text}</Text><Metadata colors={colors}>{t("Waits for: {{tasks}}", {tasks:edge.waitsFor.map(id => goal.tasks.find(task => task.id === id)?.text ?? id).join(" · ")})}</Metadata></View>)}
@@ -42,6 +42,7 @@ export function GoalPlanning({ goal, colors, disabled, available, post }: {
         <NativeButton colors={colors} label="Edit dependencies" disabled={locked || goal.tasks.length < 2} onPress={() => edit("dependencies")} />
         <NativeButton colors={colors} label="Record blocker" disabled={locked || blockers.length >= 32} onPress={() => edit("blocker")} />
       </View> : null}
+      {blockers.length>=32 ? <Metadata colors={colors}>{t("Blocker history limit reached")}</Metadata> : null}
       {mode ? <View style={{ gap: 10 }}>
         <SettingsSelect label={t(mode === "dependencies" ? "Task" : "Blocker scope")} value={taskId} options={[...(mode === "blocker" ? [{ value: "", label: t("Whole goal") }] : []), ...goal.tasks.map(task => ({ value: task.id, label: task.text }))]} disabled={locked || stale} onValueChange={id => { setTaskId(id);setWaitsFor(dependencies.find(edge => edge.taskId === id)?.waitsFor ?? []); }} />
         {mode === "dependencies" ? goal.tasks.filter(task => task.id !== taskId).map(task => <PressableRow key={task.id} colors={colors} accessibilityRole="checkbox" accessibilityLabel={t("Waits for {{task}}",{task:task.text})} accessibilityState={{ checked: waitsFor.includes(task.id), disabled: locked || stale }} aria-checked={waitsFor.includes(task.id)} disabled={locked || stale} onPress={() => { if (!locked && !stale) setWaitsFor(waitsFor.includes(task.id) ? waitsFor.filter(id => id !== task.id) : [...waitsFor,task.id]); }} style={{ minHeight: 44, flexDirection: "row", gap: 8, alignItems: "center" }}><Text style={{ color: colors.foreground }}>{waitsFor.includes(task.id) ? "☑" : "☐"} {task.text}</Text></PressableRow>) : <>
@@ -54,6 +55,6 @@ export function GoalPlanning({ goal, colors, disabled, available, post }: {
       {blockers.some(blocker => blocker.clearedAt !== undefined) ? <NativeButton colors={colors} label={history ? "Hide cleared blockers" : "Cleared blockers"} onPress={() => setHistory(!history)} /> : null}
       {history ? blockers.filter(blocker => blocker.clearedAt !== undefined).map(blocker => <View key={blocker.id} style={{ gap: 4 }}><Text selectable style={{ color: colors.foregroundMuted }}>{blocker.reason}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 12 }}>{blocker.evidence}</Text><Metadata colors={colors}>{t("Cleared {{time}}",{time:time(blocker.clearedAt!)})}</Metadata></View>) : null}
     </View> : null}
-    {error ? <Metadata colors={colors} alert>{error}</Metadata> : null}
+    {error ? <Metadata colors={colors} alert>{t(error)}</Metadata> : null}
   </View>;
 }

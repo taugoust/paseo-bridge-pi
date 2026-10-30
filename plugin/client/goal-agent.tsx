@@ -55,7 +55,7 @@ export function GoalAgent({ child, sessionId, runtimeEpoch, onOpenAgent, ...prop
       const resolved = await route({ agentId: request.agentId, workspaceId: request.workspaceId, expectedSessionId: request.sessionId, expectedRuntimeEpoch: request.runtimeEpoch,
         taskId: request.taskId, childId: request.childId, groupId: request.groupId, runtimeId: request.runtimeId, attempt: request.attempt });
       if (mounted.current && current.current === requestKey) onOpenAgent(resolved.agentId);
-    } catch { if (mounted.current && current.current === requestKey) setError(t("Chat unavailable. Try again.")); }
+    } catch { if (mounted.current && current.current === requestKey) setError("Chat unavailable. Try again."); }
     finally { if (mounted.current) setPending(false); }
   }
   const observed = evidence?.item;
@@ -72,6 +72,6 @@ export function GoalAgent({ child, sessionId, runtimeEpoch, onOpenAgent, ...prop
   return <View style={{ gap: 4 }}>
     {request && onOpenAgent ? <PressableRow colors={colors} onSurface1 disabled={pending} accessibilityRole="button" accessibilityLabel={t("Open chat")} onPress={() => void open()} style={rowStyle}>{content}</PressableRow>
       : <View style={rowStyle}>{content}</View>}
-    {error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{error}</Text> : null}
+    {error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{t(error)}</Text> : null}
   </View>;
 }

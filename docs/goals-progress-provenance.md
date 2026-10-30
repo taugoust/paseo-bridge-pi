@@ -55,8 +55,10 @@ worker epoch and questionnaire answer. The producer must validate the exact
 outstanding request and child, persist receipts and reject stale/replayed answers.
 Pending questionnaire wording is deliberately neutral: this surface is not a
 worker-to-human escalation inbox. The existing authenticated answer route remains
-available; coordinator-first structured guidance is a separate integration, and
-`notify_parent` delivery is not a questionnaire resolution receipt.
+available. The separate owner-bound native guidance lane forwards genuine human
+questionnaires to the top-level agent; the goal recorder retains its actual waiter,
+records the trusted human receipt and cancels forwarding on abort or a racing local
+answer. `notify_parent` delivery is not a questionnaire resolution receipt.
 No permission approval DTO is accepted by this action. The UI retains rejected
 answer drafts; a changed entry requires explicit review before resubmission.
 
@@ -78,7 +80,29 @@ supported. Symlinks/traversal, changed/deleted files and arbitrary preview paths
 rejected. Markup is selectable source text, never executed. Registration does not
 change a terminal outcome. User-initiated JSON export uses the existing copy surface,
 not automatic repo writes. Producer and bridge pins must be updated together for
-these additive strict-schema fields; older producers omit unavailable metadata. Execution controls and
+these additive strict-schema fields; older producers omit unavailable metadata.
+
+Dedicated workers may explicitly register artifacts with the inherited
+`goal_reference` helper only when both that helper and `read` are allowed by the
+parent/profile/retained tool policy. Reads use the actual nested read tool and its
+hooks before registration; pre-authorization file identity/version must still match
+the opened snapshot. No new filesystem or permission authority is granted.
+Questions can bind registered IDs into immutable question-specific references;
+preview additionally checks question ID/revision and worker epoch. Local reference
+IDs are not transferred as authority to a top-level human questionnaire. Pending
+question attachments are protected during bounded cache merge.
+
+Parent-owned planning metadata adapts upstream explicit blockers and dependency
+waiting without adding a scheduler: same-goal advisory task IDs reject cycles and
+foreign/self edges; clear-by-ID retains blocker evidence/time/history. It never
+changes goal execution, task status or coordinator hierarchy.
+
+Owned Goals labels use the optional public host translation facility when both
+`defineTranslations` and `useTranslation` exist on the existing client namespace.
+English/zh-CN resources follow the host locale and preserve open drafts; older
+native clients safely use English without evaluating an unavailable API. Authored
+objectives, task text, questions, options and evidence are never translated. No
+language setting or unconditional new native import is added. Execution controls and
 verified child links remain exclusive to the registry's dedicated-child path.
 `goalAgentRoute` requires a complete, fresh inventory, exact task **and** child,
 matching parent session, job/group and attempt, current runtime and native
