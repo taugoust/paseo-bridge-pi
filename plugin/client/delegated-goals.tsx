@@ -3,12 +3,13 @@ import { GoalTicketRow, StatusBadge, TaskBar, TabStrip, StoryLog, goalWorkingCol
 import { Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { Icon, Modal } from "@getpaseo/plugin/client/ui";
-import { Metadata, NativeButton, type PresentationColors } from "./presentation";
+import { Metadata, type PresentationColors } from "./presentation";
+import { GoalButton as NativeButton, useGoalText } from "./goal-language";
 import { openGoalForm } from "./goal-form";
 import { GoalQuestions } from "./goal-questions";
 import { assignedTickets, type AssignedTicket } from "./assigned-goals";
-import { goalRecordTime } from "./goal-history";
 import { GoalRecordedDetails } from "./goal-recorded-details";
+import { GoalPlanning } from "./goal-planning";
 import type { z } from "zod";
 import type { delegatedGoalEntrySchema, workflowSnapshotSchema } from "../shared/workflows";
 
@@ -28,6 +29,7 @@ type Props = {
   busy: boolean;
   executionAvailable: boolean;
   limitsEditable?: boolean;
+  planningAvailable?: boolean;
   model: string | null;
   limits: { automaticTurns: number | null; noProgressTurns: number | null };
   post(fields: Record<string, unknown>): Promise<false | { snapshot: { delegatedGoals?: DelegatedGoalRegistry } }>;
@@ -54,6 +56,7 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
   limits: Props["limits"];
   onCancel?: () => void; onSubmit(objective: string, tokenBudget: number | undefined, openedRevision: number | undefined, continuationLimits: { automaticTurns: number | null; noProgressTurns: number | null }): Promise<boolean>;
 }) {
+  const { t } = useGoalText();
   const [openedRevision] = useState(() => {
     if (!draftRevisions.has(draftKey)) draftRevisions.set(draftKey, editRevision(goal, limitsOnly));
     return draftRevisions.get(draftKey);
@@ -70,33 +73,33 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
   function close(notify = true) { form.close(); drafts.delete(draftKey); draftRevisions.delete(draftKey); if (notify) onCancel?.(); }
   return <View style={{ gap: limitsOnly ? 10 : 20, minWidth: 0, padding: 14, borderRadius: 8, backgroundColor: colors.surface0 }}>
     <View style={{ gap: 8 }}>
-      <Text style={{ color: colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "500" }}>{limitsOnly ? "Edit limits" : goal ? "Edit goal" : "New goal"}</Text>
-      {!goal ? <Metadata colors={colors}>Save an outcome. Start when you’re ready.</Metadata> : null}
+      <Text style={{ color: colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "500" }}>{t(limitsOnly ? "Edit limits" : goal ? "Edit goal" : "New goal")}</Text>
+      {!goal ? <Metadata colors={colors}>{t("Save an outcome. Start when you’re ready.")}</Metadata> : null}
     </View>
     {!limitsOnly ? <View style={{ gap: 8 }}>
-      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>Outcome</Text>
-      <TextInput accessibilityLabel={goal ? "Goal objective" : "New goal"} placeholder="What should be achieved?"
+      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{t("Outcome")}</Text>
+      <TextInput accessibilityLabel={t(goal ? "Goal objective" : "New goal")} placeholder={t("What should be achieved?")}
         placeholderTextColor={colors.foregroundMuted} value={state.objective} onChangeText={form.setObjective}
         multiline maxLength={4000} editable={!locked} style={[input, { minHeight: 144, textAlignVertical: "top" }]} />
-      {state.objectiveError ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{state.objectiveError}</Metadata> : null}
+      {state.objectiveError ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{t(state.objectiveError)}</Metadata> : null}
     </View> : null}
     <View style={{ gap: 8, ...(!limitsOnly ? { maxWidth: 400 } : {}) }}>
-      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>Token budget</Text>
-      <TextInput accessibilityLabel="Goal token budget" placeholder="Unlimited" placeholderTextColor={colors.foregroundMuted}
+      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{t("Token budget")}</Text>
+      <TextInput accessibilityLabel={t("Goal token budget")} placeholder={t("Unlimited")} placeholderTextColor={colors.foregroundMuted}
         value={state.budget} onChangeText={form.setBudget} keyboardType="numeric" maxLength={7} editable={!locked} style={input} />
       <Metadata colors={colors} alert={!!state.budgetError} style={{ color: state.budgetError ? colors.statusDanger : colors.foregroundMuted }}>
-        {state.budgetError ?? (goal ? "Applies to this goal only" : "Created paused • Choose Start when ready")}
+        {t(state.budgetError ?? (goal ? "Applies to this goal only" : "Created paused • Choose Start when ready"))}
       </Metadata>
     </View>
     <View style={{ gap: limitsOnly ? 8 : 12, ...(!limitsOnly ? { maxWidth: 400 } : {}) }}>
       {([ ["Automatic responses", "automaticTurns", form.setAutomaticTurns], ["No-progress responses", "noProgressTurns", form.setNoProgressTurns] ] as const).map(([label, key, set]) => <View key={key} style={{ gap: 8 }}>
-        <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{label}</Text>
-        <TextInput accessibilityLabel={`Goal ${label.toLowerCase()}`} placeholder={`Default: ${limits[key] ?? "Unlimited"}`} placeholderTextColor={colors.foregroundMuted}
+        <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{t(label)}</Text>
+        <TextInput accessibilityLabel={t(`Goal ${label.toLowerCase()}`)} placeholder={t("Default: {{value}}",{value:limits[key] ?? t("Unlimited")})} placeholderTextColor={colors.foregroundMuted}
           value={state[key]} onChangeText={set} keyboardType="numeric" maxLength={16} editable={!locked} style={input} />
       </View>)}
-      <Metadata colors={colors} alert={!!state.limitsError}>{state.limitsError ?? (limitsOnly ? "Blank limits inherit configured defaults. Counters are preserved; exceeded limits pause at the next safe boundary." : "Leave empty to use the configured defaults")}</Metadata>
+      <Metadata colors={colors} alert={!!state.limitsError}>{t(state.limitsError ?? (limitsOnly ? "Blank limits inherit configured defaults. Counters are preserved; exceeded limits pause at the next safe boundary." : "Leave empty to use the configured defaults"))}</Metadata>
     </View>
-    {stale ? <Metadata colors={colors} alert style={{ color: colors.statusWarning }}>This goal changed while you were editing. Cancel and reopen it to review the latest version.</Metadata> : null}
+    {stale ? <Metadata colors={colors} alert style={{ color: colors.statusWarning }}>{t("This goal changed while you were editing. Cancel and reopen it to review the latest version.")}</Metadata> : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       <NativeButton colors={colors} primary label={goal ? "Save changes" : "Create"} disabled={locked || stale || !state.canSubmit}
         onPress={() => { if (locked || stale || !state.canSubmit) return; void onSubmit(state.objective.trim(), state.tokenBudget, openedRevision, state.continuationLimits).then(ok => { if (ok) { form.setObjective(""); form.setBudget(""); close(false); } }); }} style={{ minHeight: 44 }} />
@@ -105,7 +108,8 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
   </View>;
 }
 
-export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, model, limits, post, renderAgent, renderReview }: Props) {
+export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, planningAvailable = false, model, limits, post, renderAgent, renderReview }: Props) {
+  const { t, time } = useGoalText();
   const allEntries: Ticket[] = [...registry.entries, ...assignedTickets(assignedGoal, completedAssigned)];
   const [width, setWidth] = useState(0);
   const [selected, setSelected] = useViewState<string | null>(identity, "selected", allEntries.length ? null : "new");
@@ -159,19 +163,19 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       {showList ? <View style={{ width: wide ? 320 : "100%", flexShrink: 0, padding: 16, gap: 16,
         ...(wide ? { borderRightWidth: 1, borderRightColor: colors.border } : {}) }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, flex: 1 }}>{history ? "Goal history" : ""}</Text>
+          <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, flex: 1 }}>{history ? t("Goal history") : ""}</Text>
           <NativeButton colors={colors} label="New goal" onPress={() => { setHistory(false); select("new"); }} disabled={locked} style={{ minHeight: 44 }} />
         </View>
-        {selectionReview ? <Metadata colors={colors}>Goal saved. Select an entry to review.</Metadata> : null}
+        {selectionReview ? <Metadata colors={colors}>{t("Goal saved. Select an entry to review.")}</Metadata> : null}
         <View style={{ gap: 4 }}>
           {groups.map((group, index) => group.entries.length ? <View key={index} style={{ gap: 4 }}>
-            {group.title ? <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, paddingTop: 12 }}>{group.title}</Text> : null}
+            {group.title ? <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, paddingTop: 12 }}>{t(group.title)}</Text> : null}
             {group.entries.map(entry => <GoalTicketRow key={entry.id} colors={colors} title={entry.text} goal={entry}
               selected={selection === entry.id} onPress={() => select(entry.id)} />)}
           </View> : null)}
           {!entries.length ? <View style={{ paddingVertical: 24, gap: 8 }}>
-              <Metadata colors={colors}>{history ? "No goal history yet" : "No goals yet"}</Metadata>
-              {!history ? <Metadata colors={colors}>Save an outcome and track its checklist</Metadata> : null}
+              <Metadata colors={colors}>{t(history ? "No goal history yet" : "No goals yet")}</Metadata>
+              {!history ? <Metadata colors={colors}>{t("Save an outcome and track its checklist")}</Metadata> : null}
             </View> : null}
         </View>
         <NativeButton colors={colors} label={history ? "Current goals" : "History"} onPress={() => { setHistory(!history); select(null); }} style={{ alignSelf: "flex-start", backgroundColor: "transparent", minHeight: 44 }} />
@@ -207,13 +211,13 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
             </View>
             <TaskBar colors={colors} tasks={goal.tasks} />
             {!goal.assigned && goal.story?.questions?.some(q => q.status === "pending") && tab !== "questions" ? button("View pending questions", () => { setSelected(goal.id); setTabs({ ...tabs, [goal.id]: "questions" }); }, false) : null}
-            {goal.assigned && goal.endedAt ? <Metadata colors={colors}>{goalRecordTime(goal.endedAt)}</Metadata> : null}
+            {goal.assigned && goal.endedAt ? <Metadata colors={colors}>{time(goal.endedAt)}</Metadata> : null}
             {goal.waiting ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.waiting}</Text> : null}
             {goal.assigned ? <View style={{ gap: 4 }}>
-              {goal.waiting ? <Metadata colors={colors}>{goal.waitDeadline === undefined ? "Wait deadline unavailable in this runtime" : goal.waitDeadline !== null ? `Safety wake: ${new Date(goal.waitDeadline).toLocaleString()} (when idle)` : "Waiting for an external message or explicit resume; no safety deadline"}</Metadata> : null}
-              {goal.lastWake ? <Metadata colors={colors}>Last wake: {goal.lastWake.reason.replaceAll("_", " ")} · {new Date(goal.lastWake.at).toLocaleString()}</Metadata> : null}
-              {goal.lastTaskUpdateAt != null ? <Metadata colors={colors}>Last checklist change: {new Date(goal.lastTaskUpdateAt).toLocaleString()}</Metadata> : null}
-              {goal.lastBlocker ? <View style={{ gap: 4 }}><Metadata colors={colors}>Recorded blocker: {goal.lastBlocker.reason}</Metadata><Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.lastBlocker.evidence}</Text></View> : null}
+              {goal.waiting ? <Metadata colors={colors}>{goal.waitDeadline === undefined ? t("Wait deadline unavailable in this runtime") : goal.waitDeadline !== null ? t("Safety wake: {{time}} (when idle)",{time:time(goal.waitDeadline)}) : t("Waiting for an external message or explicit resume; no safety deadline")}</Metadata> : null}
+              {goal.lastWake ? <Metadata colors={colors}>{t("Last wake: {{reason}} · {{time}}",{reason:goal.lastWake.reason.replaceAll("_", " "),time:time(goal.lastWake.at)})}</Metadata> : null}
+              {goal.lastTaskUpdateAt != null ? <Metadata colors={colors}>{t("Last checklist change: {{time}}",{time:time(goal.lastTaskUpdateAt)})}</Metadata> : null}
+              {goal.lastBlocker ? <View style={{ gap: 4 }}><Metadata colors={colors}>{t("Recorded blocker: {{reason}}",{reason:goal.lastBlocker.reason})}</Metadata><Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.lastBlocker.evidence}</Text></View> : null}
             </View> : renderAgent?.(goal)}
           {!goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {goal.status === "active" ? button("Pause", () => { void action("pause"); }, disabled) : button(goal.child ? "Resume" : "Start", () => { void action(goal.child ? "resume" : "start"); }, disabled || !executionAvailable || budgetExhausted)}
@@ -221,10 +225,10 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
             {button("Clear", () => { setSelected(goal.id); setClearRevision(goal.revision); setClearConfirm(true); }, disabled || goal.status === "active")}
           </View> : null}
           </View>
-          {!goal.assigned && !executionAvailable && !terminal(goal) ? <Metadata colors={colors}>Start and Resume are unavailable in this session</Metadata> : !goal.assigned && budgetExhausted && goal.status !== "active" && !terminal(goal) ? <Metadata colors={colors}>Raise or remove the token budget before resuming</Metadata> : null}
-          {clearConfirm && !goal.assigned ? <Modal title="Clear goal?" open onOpenChange={setClearConfirm}><Modal.Content><View style={{ gap: 16 }}>
+          {!goal.assigned && !executionAvailable && !terminal(goal) ? <Metadata colors={colors}>{t("Start and Resume are unavailable in this session")}</Metadata> : !goal.assigned && budgetExhausted && goal.status !== "active" && !terminal(goal) ? <Metadata colors={colors}>{t("Raise or remove the token budget before resuming")}</Metadata> : null}
+          {clearConfirm && !goal.assigned ? <Modal title={t("Clear goal?")} open onOpenChange={setClearConfirm}><Modal.Content><View style={{ gap: 16 }}>
             <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{goal.text}</Text>
-            <Metadata colors={colors}>Clearing does not mark the goal complete. Its checklist remains in History.</Metadata>
+            <Metadata colors={colors}>{t("Clearing does not mark the goal complete. Its checklist remains in History.")}</Metadata>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {button("Keep goal", () => setClearConfirm(false), disabled)}
               {button("Clear goal", () => { void action("clear", { expectedEntryRevision: clearRevision }).then(ok => { if (ok) select(null); }); }, disabled || goal.status === "active" || terminal(goal) || goal.revision !== clearRevision)}
@@ -232,13 +236,13 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           </View></Modal.Content></Modal> : null}
           <View style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 2, backgroundColor: colors.surface0, borderRadius: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-              <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600", flex: 1 }}>Limits</Text>
+              <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600", flex: 1 }}>{t("Limits")}</Text>
               {!terminal(goal) ? button("Edit limits", () => { setSelected(goal.id); setEditingLimits(true); }, disabled || editingLimits || !limitsEditable || goal.policyRevision === undefined || (goal.assigned && !goal.activationId)) : null}
             </View>
-            <Metadata colors={colors}>Automatic responses: {goal.automaticTurns ?? "Unavailable"} / {goal.assigned && goal.automaticTurns === undefined ? "Unavailable" : (goal.assigned ? goal.effectiveLimits?.automaticTurns : goal.continuationLimits?.automaticTurns) ?? limits.automaticTurns ?? "Unlimited"}</Metadata>
-            <Metadata colors={colors}>Tokens: {goal.tokensUsed?.toLocaleString() ?? "Unavailable"} / {goal.tokenBudget === undefined ? "Unavailable" : goal.tokenBudget?.toLocaleString() ?? "Unlimited"}</Metadata>
-            <Metadata colors={colors}>No-progress responses: {goal.noProgressTurns ?? "Unavailable"} / {goal.assigned && goal.noProgressTurns === undefined ? "Unavailable" : (goal.assigned ? goal.effectiveLimits?.noProgressTurns : goal.continuationLimits?.noProgressTurns) ?? limits.noProgressTurns ?? "Unlimited"}</Metadata>
-            {!goal.assigned && goal.child?.model ? <Metadata colors={colors}>Launch model: {goal.child.model}</Metadata> : null}
+            <Metadata colors={colors}>{t("Automatic responses")}: {goal.automaticTurns ?? t("Unavailable")} / {goal.assigned && goal.automaticTurns === undefined ? t("Unavailable") : (goal.assigned ? goal.effectiveLimits?.automaticTurns : goal.continuationLimits?.automaticTurns) ?? limits.automaticTurns ?? t("Unlimited")}</Metadata>
+            <Metadata colors={colors}>{t("Tokens")}: {goal.tokensUsed?.toLocaleString() ?? t("Unavailable")} / {goal.tokenBudget === undefined ? t("Unavailable") : goal.tokenBudget?.toLocaleString() ?? t("Unlimited")}</Metadata>
+            <Metadata colors={colors}>{t("No-progress responses")}: {goal.noProgressTurns ?? t("Unavailable")} / {goal.assigned && goal.noProgressTurns === undefined ? t("Unavailable") : (goal.assigned ? goal.effectiveLimits?.noProgressTurns : goal.continuationLimits?.noProgressTurns) ?? limits.noProgressTurns ?? t("Unlimited")}</Metadata>
+            {!goal.assigned && goal.child?.model ? <Metadata colors={colors}>{t("Launch model")}: {goal.child.model}</Metadata> : null}
           </View>
           {editingLimits && !terminal(goal) ? <GoalForm key={`${identity}/limits/${goal.id}`} draftKey={`${identity}/limits/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits} limitsOnly
             onCancel={() => setEditingLimits(false)} onSubmit={async (_objective, tokenBudget, openedRevision, continuationLimits) => {
@@ -256,38 +260,39 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           ]} />
           {tab === "timeline" ? <StoryLog key={`${identity}/${goal.id}/timeline`} identity={`${identity}/${goal.id}/timeline`} colors={colors} entries={goal.story?.timeline ?? []} truncated={goal.story?.coverage?.timelineTruncated} timeline /> : null}
           {tab === "activity" ? <StoryLog key={`${identity}/${goal.id}/activity`} identity={`${identity}/${goal.id}/activity`} colors={colors} entries={goal.story?.activity ?? []} truncated={goal.story?.coverage?.activityTruncated} /> : null}
-          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>No recorded questions available for this assigned goal</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision}
+          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>{t("No recorded questions available for this assigned goal")}</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision}
             disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child || goal.observation?.state === "unavailable"} onAnswer={(question, answer, openedRevision) => action("answer", {
               expectedEntryRevision: openedRevision, questionId: question.id, questionRevision: question.revision, workerEpoch: question.workerEpoch, answer,
             })} /> : null}
-          {tab === "questions" && goal.story?.coverage?.questionsTruncated ? <Metadata colors={colors}>Earlier questions omitted</Metadata> : null}
+          {tab === "questions" && goal.story?.coverage?.questionsTruncated ? <Metadata colors={colors}>{t("Earlier questions omitted")}</Metadata> : null}
           {tab === "write-up" ? <View style={{ gap: 12, padding: 14, borderRadius: 8, backgroundColor: colors.surface0 }}>
             {goal.text.trim() !== goal.text.split("\n")[0].trim() ? <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{goal.text}</Text> : null}
           <View style={{ gap: 12 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500", flex: 1 }}>Checklist</Text>
+              <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500", flex: 1 }}>{t("Checklist")}</Text>
               <Metadata colors={colors}>{goal.tasks.filter(task => task.status === "completed").length} / {goal.tasks.length}</Metadata>
             </View>
-            {goal.tasks.length ? (expanded[goal.id] ? goal.tasks : goal.tasks.slice(0, 5)).map((task, index) => <View key={task.id ?? index} accessible accessibilityLabel={`${task.text}: ${task.status.replaceAll("_", " ")}`} style={{ flexDirection: "row", gap: 10, alignItems: "flex-start", paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
+            {goal.tasks.length ? (expanded[goal.id] ? goal.tasks : goal.tasks.slice(0, 5)).map((task, index) => <View key={task.id ?? index} accessible accessibilityLabel={`${task.text}: ${t(task.status.replaceAll("_", " "))}`} style={{ flexDirection: "row", gap: 10, alignItems: "flex-start", paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
               <View style={{ paddingTop: 2 }}><Icon name={task.status === "completed" ? "Check" : task.status === "blocked" ? "Ban" : task.status === "in_progress" ? "CirclePlay" : "Circle"} size={14} color={task.status === "completed" ? colors.statusSuccess : task.status === "blocked" ? colors.statusDanger : task.status === "in_progress" ? goalWorkingColor : colors.foregroundMuted} /></View>
               <View style={{ flex: 1, minWidth: 0 }}><Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{task.text}</Text></View>
-              {task.status === "blocked" ? <Text style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 19 }}>Blocked</Text> : null}
-            </View>) : <Metadata colors={colors}>{goal.status === "active" ? "No tasks reported yet" : "No tasks yet"}</Metadata>}
-            {goal.tasks.length > 5 ? button(expanded[goal.id] ? "Show fewer tasks" : `Show all ${goal.tasks.length} tasks`, () => setExpanded({ ...expanded, [goal.id]: !expanded[goal.id] }), false) : null}
+              {task.status === "blocked" ? <Text style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 19 }}>{t("Blocked")}</Text> : null}
+            </View>) : <Metadata colors={colors}>{t(goal.status === "active" ? "No tasks reported yet" : "No tasks yet")}</Metadata>}
+            {goal.tasks.length > 5 ? button(expanded[goal.id] ? "Show fewer tasks" : t("Show all {{count}} tasks",{count:goal.tasks.length}), () => setExpanded({ ...expanded, [goal.id]: !expanded[goal.id] }), false) : null}
             {!goal.assigned && !terminal(goal) && goal.status !== "active" ? button(addingTask ? "Cancel task" : "Add task", () => { setSelected(goal.id); setAddingTask(!addingTask); setTaskText(""); }, disabled || (!addingTask && taskCapacity)) : null}
             {addingTask && !goal.assigned ? <View style={{ gap: 8 }}>
-              <TextInput accessibilityLabel="Subtask" value={taskText} onChangeText={setTaskText} editable={!disabled && goal.status !== "active" && !terminal(goal)} maxLength={503} placeholder="Describe a task" placeholderTextColor={colors.foregroundMuted}
+              <TextInput accessibilityLabel={t("Subtask")} value={taskText} onChangeText={setTaskText} editable={!disabled && goal.status !== "active" && !terminal(goal)} maxLength={503} placeholder={t("Describe a task")} placeholderTextColor={colors.foregroundMuted}
                 style={{ minHeight: 44, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 }} />
-              {taskCapacity ? <Metadata colors={colors}>50-task limit reached</Metadata> : duplicateTask ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>That task is already in this goal</Metadata> : null}
+              {taskCapacity ? <Metadata colors={colors}>{t("50-task limit reached")}</Metadata> : duplicateTask ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{t("That task is already in this goal")}</Metadata> : null}
               {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || taskCapacity || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
             </View> : null}
           </View>
+          {!goal.assigned ? <GoalPlanning key={`${identity}/${goal.id}/planning`} goal={goal} colors={colors} disabled={disabled} available={planningAvailable} post={(name, fields) => action(name, fields)} /> : null}
           {!goal.assigned ? <GoalRecordedDetails key={`${identity}/${goal.id}`} colors={colors} goal={goal} /> : null}
           {!goal.assigned ? renderReview?.(goal) : null}
-          {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>Summary</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
+          {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Summary")}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
           </View> : null}
           </View>
-        </> : <Metadata colors={colors}>{history && !entries.length ? "No goal history yet" : "Select a goal"}</Metadata>}
+        </> : <Metadata colors={colors}>{t(history && !entries.length ? "No goal history yet" : "Select a goal")}</Metadata>}
       </View> : null}
     </View>
   </View>;

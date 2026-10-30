@@ -72,8 +72,8 @@ export function NativeButton({ colors, label, onPress, disabled = false, danger 
 }
 
 /** A bounded selectable document, not a terminal or a new control surface. */
-export function OutputWell({ colors, text, monospace = false, platform, maxHeight = 320, copyable = true }: {
-  colors: PresentationColors; text: string; monospace?: boolean; platform?: string; maxHeight?: number; copyable?: boolean;
+export function OutputWell({ colors, text, monospace = false, platform, maxHeight = 320, copyable = true, copyLabel = "Copy", copyErrorLabel = "Could not copy. Select the text to copy it." }: {
+  colors: PresentationColors; text: string; monospace?: boolean; platform?: string; maxHeight?: number; copyable?: boolean; copyLabel?: string; copyErrorLabel?: string;
 }) {
   const [copyError, setCopyError] = useState(false);
   return <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface0, overflow: "hidden" }}>
@@ -82,8 +82,8 @@ export function OutputWell({ colors, text, monospace = false, platform, maxHeigh
         ...(monospace ? { fontFamily: platform === "ios" ? "Menlo" : "monospace" } : {}) }}>{text}</Text>
     </ScrollView>
     {copyable ? <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 8, paddingHorizontal: 8, paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
-      {copyError ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>Could not copy. Select the text to copy it.</Metadata> : null}
-      <NativeButton colors={colors} label="Copy" onPress={() => {
+      {copyError ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{copyErrorLabel}</Metadata> : null}
+      <NativeButton colors={colors} label={copyLabel} onPress={() => {
         setCopyError(false);
         void Promise.resolve().then(() => copyText(text)).catch(() => setCopyError(true));
       }} style={{ paddingVertical: 4, paddingHorizontal: 8, backgroundColor: "transparent" }} />

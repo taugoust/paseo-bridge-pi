@@ -409,7 +409,7 @@ function WorkflowsView({
 					{section === "goal" ? (
 						<>
 							<DelegatedGoals key={binding} registry={delegatedGoals ?? { version: 1, revision: 0, entries: [] }} assignedGoal={goal ?? null} completedAssigned={completedGoals} colors={colors} identity={binding ?? ""}
-								locked={locked || !!dialog || !delegatedGoals || snapshot.capabilities?.delegatedGoals !== true} busy={snapshot.busy} executionAvailable={snapshot.capabilities?.delegatedGoalExecution === true} limitsEditable={snapshot.capabilities?.goalLimitEditing === true} model={null} limits={snapshot.limits} post={post}
+								locked={locked || !!dialog || !delegatedGoals || snapshot.capabilities?.delegatedGoals !== true} busy={snapshot.busy} executionAvailable={snapshot.capabilities?.delegatedGoalExecution === true} limitsEditable={snapshot.capabilities?.goalLimitEditing === true} planningAvailable={snapshot.capabilities?.goalPlanning === true} model={null} limits={snapshot.limits} post={post}
                 renderReview={entry => <GoalReview key={`${binding}/${entry.id}`} goal={entry} colors={colors} disabled={locked || snapshot.busy} available={snapshot.capabilities?.goalReview === true}
                   register={fields => post({ operation: "start", action: "goals.reference", expectedGoalId: entry.id, ...fields }).then(Boolean)}
                   preview={(referenceId, expectedEntryRevision) => {

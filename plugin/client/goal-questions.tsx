@@ -8,9 +8,9 @@ import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { z } from "zod";
 import type { goalQuestionSchema } from "../shared/workflows";
 import type { questionnaireAnswerSchema } from "../shared/foreground-tasks";
-import { Metadata, NativeButton, type PresentationColors } from "./presentation";
+import { Metadata, type PresentationColors } from "./presentation";
+import { GoalButton as NativeButton, useGoalText } from "./goal-language";
 import { PressableRow, goalWorkingColor } from "./goal-ticket-ui";
-import { goalRecordTime } from "./goal-history";
 export type GoalQuestion = z.infer<typeof goalQuestionSchema>;
 export type GoalAnswer = z.infer<typeof questionnaireAnswerSchema>;
 type Draft = { revision: number; values: Record<string, string> };
@@ -19,13 +19,14 @@ export function GoalQuestions({ colors, questions, identity, revision, disabled,
   colors: PresentationColors; questions: GoalQuestion[]; identity: string; revision: number; disabled: boolean;
   onAnswer(question: GoalQuestion, answer: GoalAnswer, openedRevision: number): Promise<boolean>;
 }) {
+  const { t } = useGoalText();
   const [historyLimit, setHistoryLimit] = useState(10);
-  if (!questions.length) return <Metadata colors={colors}>No recorded questions</Metadata>;
+  if (!questions.length) return <Metadata colors={colors}>{t("No recorded questions")}</Metadata>;
   const pending = questions.filter(question => question.status === "pending");
   const settled = questions.filter(question => question.status !== "pending");
   return <View style={{ gap: 16 }}>
     {pending.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
-    {settled.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Question history</Text> : null}
+    {settled.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{t("Question history")}</Text> : null}
     {[...settled].reverse().slice(0, historyLimit).map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
     {settled.length > historyLimit ? <NativeButton colors={colors} label="Show older questions" onPress={() => setHistoryLimit(historyLimit + 10)} /> : null}
   </View>;
@@ -34,6 +35,7 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
   colors: PresentationColors; question: GoalQuestion; identity: string; revision: number; disabled: boolean;
   onAnswer(question: GoalQuestion, answer: GoalAnswer, openedRevision: number): Promise<boolean>;
 }) {
+  const { t, time } = useGoalText();
   const key = `${identity}/${question.id}/${question.workerEpoch}/${question.revision}`;
   const [draft, update] = useState<Draft>(() => drafts.get(key) ?? { revision, values: {} });
   const [sending, setSending] = useState(false);
@@ -53,13 +55,13 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
     finally { setSending(false); }
   }
   return <View style={{ gap: 10 }}>
-    <Text accessibilityLabel={new Date(question.at).toLocaleString()} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>Asked {goalRecordTime(question.at)}</Text>
+    <Text accessibilityLabel={new Date(question.at).toLocaleString()} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{t("Asked {{time}}",{time:time(question.at)})}</Text>
     {question.request.questions.map(item => {
       const answer = question.answer?.answers.find(answer => answer.id === item.id);
       return <View key={item.id} style={{ gap: 8 }}>
         {item.label ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{item.label}</Text> : null}
         <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{item.prompt}</Text>
-        {pending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Pending questionnaire response</Text> : null}
+        {pending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{t("Pending questionnaire response")}</Text> : null}
         {item.background ? <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{item.background}</Text> : null}
         {item.options.map(option => {
           const chosen = pending ? draft.values[item.id] === option.value : answer?.value === option.value;
@@ -68,23 +70,23 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
             style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: chosen ? pending ? goalWorkingColor : colors.statusSuccess : colors.border }}>
             <Text style={{ color: chosen ? pending ? goalWorkingColor : colors.statusSuccess : colors.foregroundMuted, fontSize: 13 }}>{chosen ? "●" : "○"}</Text>
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-              <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{option.label}{!pending && chosen ? " · Recorded answer" : ""}{item.recommendation === option.value ? " · Recommended" : ""}</Text>
+              <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{option.label}{!pending && chosen ? ` · ${t("Recorded answer")}` : ""}{item.recommendation === option.value ? ` · ${t("Recommended")}` : ""}</Text>
               {option.description ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{option.description}</Text> : null}
             </View>
           </PressableRow>;
         })}
-        {pending && item.allowOther ? <TextInput accessibilityLabel={`Custom answer for ${item.label ?? item.prompt}`} placeholder="Other answer" maxLength={2000}
+        {pending && item.allowOther ? <TextInput accessibilityLabel={t("Custom answer for {{prompt}}",{prompt:item.label ?? item.prompt})} placeholder={t("Other answer")} maxLength={2000}
           value={item.options.some(option => option.value === draft.values[item.id]) ? "" : draft.values[item.id] ?? ""} editable={!locked}
           onChangeText={value => save({ ...draft, values: { ...draft.values, [item.id]: value } })}
           placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, borderColor: colors.border, borderWidth: 1, borderRadius: 8, padding: 12, minHeight: 44 }} /> : null}
         {!pending && answer?.wasCustom ? <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{answer.value}</Text> : null}
       </View>;
     })}
-    {stale ? <View style={{ gap: 8 }}><Metadata colors={colors} alert>This goal changed. Review the latest question before answering.</Metadata>
+    {stale ? <View style={{ gap: 8 }}><Metadata colors={colors} alert>{t("This goal changed. Review the latest question before answering.")}</Metadata>
       <NativeButton colors={colors} label="Review latest question" onPress={() => save({ revision, values: {} })} disabled={disabled || sending} /></View> : null}
     {pending ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       <NativeButton colors={{ ...colors, accent: goalWorkingColor, accentForeground: "#ffffff" }} primary label="Submit answers" disabled={locked || !valid} onPress={() => void submit(false)} style={{ minHeight: 44 }} />
       <NativeButton colors={colors} label="Cancel questions" disabled={locked} onPress={() => void submit(true)} style={{ minHeight: 44 }} />
-    </View> : <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{question.status === "cancelled" ? "Cancelled" : "Answered"}{question.answeredAt !== undefined ? ` · ${new Date(question.answeredAt).toLocaleString()}` : ""}</Text>}
+    </View> : <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{t(question.status === "cancelled" ? "Cancelled" : "Answered")}{question.answeredAt !== undefined ? ` · ${time(question.answeredAt)}` : ""}</Text>}
   </View>;
 }

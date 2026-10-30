@@ -14,12 +14,13 @@ const fixture=await mkdtemp(resolve(tmpdir(),'delegated-goals-ui-'));
 after(()=>rm(fixture,{recursive:true,force:true}));
 for(const directory of ['client','shared']) await cp(fileURLToPath(new URL(`../${directory}`,import.meta.url)),resolve(fixture,directory),{recursive:true});
 await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals } from "./client/delegated-goals"; export { goalAgentRoute } from "./shared/goal-agent"; export { GoalReview } from "./client/goal-review";');
-await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema }; }');
+await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema }; }');
 const {clientBundle,serverBundle}=await compilePlugin({client:resolve(fixture,'index.client.tsx'),server:resolve(fixture,'index.server.ts')});
 const schemas=(0,eval)(serverBundle)(name=>name==='@getpaseo/plugin'?{defineRpc:value=>value}:require(name)).default();
 const colors={foreground:'#eee',foregroundMuted:'#999',surface1:'#222',surface2:'#333',border:'#444',accent:'#eee',accentForeground:'#111',statusWarning:'#fa0',statusDanger:'#f66',statusSuccess:'#63b887'};
-function harness() {
- const states=new Map();let context;
+function harness(options={}) {
+ const states=new Map();let context,locale=options.locale;
+ const translationApi=locale===undefined?{}:{defineTranslations:definition=>{for(const [key,value]of Object.entries(definition.resources['zh-CN'])){assert.ok(key in definition.resources.en);assert.deepEqual([...value.matchAll(/{{([^}]+)}}/g)].map(m=>m[1]).sort(),[...definition.resources.en[key].matchAll(/{{([^}]+)}}/g)].map(m=>m[1]).sort());}return definition;},useTranslation:messages=>({locale,t:(key,values)=>{let text=messages.resources[locale]?.[key]??messages.resources.en[key];assert.equal(typeof text,'string');return text.replace(/{{([^}]+)}}/g,(_,name)=>String(values?.[name]??''));}})};
  const jsx=(type,props)=>({type,props:props??{}});
  const load=name=>{
   if(name==='react')return {
@@ -30,7 +31,7 @@ function harness() {
   };
   if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};
   if(name==='react-native')return {View:'View',Text:'Text',Pressable:'Pressable',Image:'Image'};
-  if(name==='@getpaseo/plugin/client')return {openExternalUrl:async()=>{}};
+  if(name==='@getpaseo/plugin/client')return {openExternalUrl:async()=>{},...translationApi};
   if(name==='@getpaseo/plugin/client/react-native')return {TextInput:'TextInput',ScrollView:'ScrollView'};
   if(name==='@getpaseo/plugin/client/ui')return {Icon:'Icon',SettingsSection:'SettingsSection',SettingsCard:'SettingsCard',SettingsAction:'SettingsAction',Modal:Object.assign(props=>jsx('Modal',props),{Content:'ModalContent'})};
   return require(name);
@@ -44,7 +45,7 @@ function harness() {
   }
   return [node,...walk(node.props.children,`${path}/children`)];
  }
- return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),remount:()=>states.clear(),goalAgentRoute};
+ return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),remount:()=>states.clear(),setLocale:next=>{locale=next;},goalAgentRoute};
 }
 const entry=(id,status='paused')=>({id,revision:2,text:`Goal ${id}`,status,tasks:[],child:null,tokenBudget:null,tokensUsed:0,automaticTurns:0,noProgressTurns:0,summary:null,waiting:null});
 const button=(nodes,label)=>nodes.find(node=>node.type==='Pressable'&&node.props.accessibilityLabel===label);
@@ -385,6 +386,27 @@ test('review contracts reject arbitrary preview paths, unsafe links and mismatch
  const request={operation:'start',action:'goals.reference',sessionId:'s',serviceEpoch:ref.id,requestId:ref.id,expectedGoalId:ref.goalId,expectedEntryRevision:1,reviewTitle:'Spec',reviewTarget:'spec.md',reviewRole:'source'};
  assert.equal(schemas.workflowRequestSchema.safeParse(request).success,true);
  assert.equal(schemas.workflowRequestSchema.safeParse({...request,action:'goals.start'}).success,false);
+});
+
+test('optional public host localization preserves drafts/authored content and old clients stay English',async()=>{
+ const h=harness({locale:'en'}),calls=[],props={registry:{version:1,revision:0,entries:[]},colors,identity:'localized-draft',locked:false,busy:false,executionAvailable:true,limits:{},post:async fields=>{calls.push(fields);return false;}};
+ let nodes=h.draw(props);textbox(nodes,'New goal').props.onChangeText('Authored outcome is not translated');nodes=h.draw(props);h.setLocale('zh-CN');nodes=h.draw(props);assert.equal(textbox(nodes,'新建目标').props.value,'Authored outcome is not translated');assert.ok(button(nodes,'创建'));button(nodes,'创建').props.onPress();await tick();assert.equal(calls[0].objective,'Authored outcome is not translated');
+ const old=harness(),oldNodes=old.draw({...props,identity:'old-native'});assert.ok(button(oldNodes,'Create'));assert.equal(button(oldNodes,'创建'),undefined);
+ const authored=entry('11111111-1111-4111-8111-111111111111');authored.text='New goal';props.registry.entries=[authored];props.identity='localized-authored';const n=harness({locale:'zh-CN'});let ns=n.draw(props);button(ns,'New goal').props.onPress();ns=n.draw(props);assert.ok(ns.some(node=>node.type==='Text'&&node.props.children==='New goal'),'authored objective is never passed through translation');
+});
+
+test('planning controls submit exact identities, retain evidence and reject stale open drafts',async()=>{
+ const h=harness(),calls=[],g=entry('planning');g.tasks=[{id:'a',text:'First task',status:'pending'},{id:'b',text:'Second task',status:'pending'}];g.planning={dependencies:[],blockers:[{id:'recorded',at:1,reason:'External service',evidence:'Actual evidence'}]};
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,planningAvailable:true,locked:false,busy:false,executionAvailable:true,limits:{},post:async fields=>{calls.push(fields);return false;}};
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);button(nodes,'Planning · 1 recorded blockers').props.onPress();nodes=h.draw(props);button(nodes,'Edit dependencies').props.onPress();nodes=h.draw(props);nodes.find(n=>n.props.accessibilityRole==='checkbox').props.onPress();nodes=h.draw(props);button(nodes,'Save planning').props.onPress();await tick();assert.equal(calls[0].action,'goals.dependencies');assert.equal(calls[0].expectedGoalId,g.id);assert.equal(calls[0].expectedEntryRevision,2);assert.deepEqual(calls[0].waitsFor,['b']);
+ g.revision++;nodes=h.draw(props);assert.equal(button(nodes,'Save planning').props.disabled,true);assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children==='Actual evidence'));button(nodes,'Clear blocker: External service').props.onPress();await tick();assert.equal(calls[1].action,'goals.blocker.clear');assert.equal(calls[1].blockerId,'recorded');assert.equal(calls[1].expectedEntryRevision,3);
+});
+
+test('planning wire contracts reject cross-goal cycles and mixed-action payloads',()=>{
+ const base={...entry('11111111-1111-4111-8111-111111111111'),tasks:[{id:'a',text:'A',status:'pending'},{id:'b',text:'B',status:'pending'}],planning:{dependencies:[{taskId:'a',waitsFor:['b']}],blockers:[]}};
+ assert.equal(schemas.delegatedGoalEntrySchema.safeParse(base).success,true);
+ for(const dependencies of [[{taskId:'a',waitsFor:['foreign']}],[{taskId:'a',waitsFor:['a']}],[{taskId:'a',waitsFor:['b']},{taskId:'b',waitsFor:['a']}]])assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...base,planning:{dependencies,blockers:[]}}).success,false);
+ const request={operation:'start',action:'goals.dependencies',sessionId:'s',serviceEpoch:base.id,requestId:base.id,expectedGoalId:base.id,expectedEntryRevision:2,taskId:'a',waitsFor:['b']};assert.equal(schemas.workflowRequestSchema.safeParse(request).success,true);assert.equal(schemas.workflowRequestSchema.safeParse({...request,action:'goals.start'}).success,false);assert.equal(schemas.workflowRequestSchema.safeParse({...request,blockerReason:'wrong action'}).success,false);
 });
 
 test('limit RPC schemas require exact policy routing and explicit nullable limits',()=>{

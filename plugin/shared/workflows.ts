@@ -36,7 +36,12 @@ export const goalReviewPreviewSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("image"), dataUri: z.string().max(360 * 1024).regex(/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/) }).strict(),
   z.object({ kind: z.literal("link"), url: z.string().max(4096).url().refine(value => { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password; }) }).strict(),
 ]);
+export const goalPlanningSchema = z.object({
+  dependencies: z.array(z.object({ taskId: z.string().min(1).max(128), waitsFor: z.array(z.string().min(1).max(128)).max(49) }).strict()).max(50),
+  blockers: z.array(z.object({ id: z.string().uuid(), at: z.number().int().nonnegative(), reason: z.string().trim().min(1).max(500), evidence: z.string().trim().min(1).max(2000), taskId: z.string().min(1).max(128).optional(), clearedAt: z.number().int().nonnegative().optional() }).strict().refine(value => value.clearedAt === undefined || value.clearedAt >= value.at)).max(32),
+}).strict();
 export const delegatedGoalEntrySchema = z.object({
+  planning: goalPlanningSchema.optional(),
   review: z.array(goalReviewReferenceSchema).max(16).optional(),
   diagnostics: z.object({
     waitDeadline: z.number().nonnegative().nullable().optional(), lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
@@ -56,12 +61,23 @@ export const delegatedGoalEntrySchema = z.object({
 	summary: z.string().max(6000).nullable(), waiting: z.string().max(1000).nullable(),
 }).strict().superRefine((entry, context) => {
   if (entry.review?.some(ref => ref.goalId !== entry.id)) context.addIssue({ code: "custom", message: "Review reference belongs to another goal" });
+  if (entry.planning) {
+    const ids = new Set(entry.tasks.map(task => task.id)), edges = new Map<string, string[]>();
+    for (const edge of entry.planning.dependencies) {
+      if (!ids.has(edge.taskId) || edges.has(edge.taskId) || new Set(edge.waitsFor).size !== edge.waitsFor.length || edge.waitsFor.some(id => !ids.has(id) || id === edge.taskId)) context.addIssue({ code: "custom", message: "Dependencies must reference distinct tasks in this goal" });
+      edges.set(edge.taskId, edge.waitsFor);
+    }
+    const visiting = new Set<string>(), visited = new Set<string>();
+    function visit(id: string): boolean { if (visiting.has(id)) return false;if (visited.has(id)) return true;visiting.add(id);for (const other of edges.get(id) ?? []) if (!visit(other)) return false;visiting.delete(id);visited.add(id);return true; }
+    if ([...edges.keys()].some(id => !visit(id))) context.addIssue({ code: "custom", message: "Task dependency cycle" });
+    if (new Set(entry.planning.blockers.map(blocker => blocker.id)).size !== entry.planning.blockers.length) context.addIssue({ code: "custom", message: "Duplicate blocker identity" });
+  }
 });
 export const workflowSnapshotSchema = z
 	.object({
 		protocol: z.literal(1),
 		capabilities: z
-			.object({ createPausedGoal: z.boolean().optional(), delegatedGoals: z.boolean().optional(), delegatedGoalExecution: z.boolean().optional(), goalLimitEditing: z.boolean().optional(), goalReview: z.boolean().optional() }).strict()
+			.object({ createPausedGoal: z.boolean().optional(), delegatedGoals: z.boolean().optional(), delegatedGoalExecution: z.boolean().optional(), goalLimitEditing: z.boolean().optional(), goalReview: z.boolean().optional(), goalPlanning: z.boolean().optional() }).strict()
 			.optional(),
 		delegatedGoals: z.object({ version: z.literal(1), revision: z.number().int().nonnegative(), entries: z.array(delegatedGoalEntrySchema).max(1000) }).strict().optional(),
 		sessionId: id,
@@ -230,7 +246,7 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 			...base,
 			operation: z.literal("start"),
 			action: z.enum([
-				"goals.create", "goals.start", "goals.pause", "goals.resume", "goals.edit", "goals.limits", "goals.clear", "goals.add_task", "goals.answer", "goals.reference",
+				"goals.create", "goals.start", "goals.pause", "goals.resume", "goals.edit", "goals.limits", "goals.clear", "goals.add_task", "goals.answer", "goals.reference", "goals.dependencies", "goals.blocker.add", "goals.blocker.clear",
 				"worktree.add",
 				"worktree.remove",
 				"worktree.prune",
@@ -254,6 +270,7 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
       workerEpoch: z.string().min(1).max(128).optional(),
       answer: questionnaireAnswerSchema.optional(),
       reviewTitle: z.string().min(1).max(160).optional(), reviewTarget: z.string().min(1).max(4096).optional(), reviewRole: z.enum(["source", "deliverable"]).optional(),
+      taskId: z.string().min(1).max(128).optional(), waitsFor: z.array(z.string().min(1).max(128)).max(49).optional(), blockerId: z.string().uuid().optional(), blockerTaskId: z.string().min(1).max(128).optional(), blockerReason: z.string().trim().min(1).max(500).optional(), blockerEvidence: z.string().trim().min(1).max(2000).optional(),
 			expectedRegistryRevision: z.number().int().nonnegative().optional(),
 			text: z.string().max(503).optional(),
 			objective: z.string().max(4000).optional(),
@@ -281,6 +298,10 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 ]).superRefine((request, context) => {
 	if (request.operation !== "start") return;
 	if (request.tokenBudget === null && !["goals.edit", "goals.limits", "goal.limits"].includes(request.action)) context.addIssue({ code: "custom", path: ["tokenBudget"], message: "Only delegated goal edits accept null to remove a cap" });
+  const planningFields = ["taskId", "waitsFor", "blockerId", "blockerTaskId", "blockerReason", "blockerEvidence"] as const;
+  const required = request.action === "goals.dependencies" ? ["taskId", "waitsFor"] : request.action === "goals.blocker.add" ? ["blockerReason", "blockerEvidence"] : request.action === "goals.blocker.clear" ? ["blockerId"] : [];
+  const allowed = [...required, ...(request.action === "goals.blocker.add" ? ["blockerTaskId"] : [])];
+  if (required.some(key => request[key as typeof planningFields[number]] === undefined) || planningFields.some(key => request[key] !== undefined && !allowed.includes(key))) context.addIssue({ code: "custom", message: "Planning actions require explicit bounded fields" });
   const referenceFields = [request.reviewTitle, request.reviewTarget, request.reviewRole];
   if (request.action === "goals.reference" ? referenceFields.some(value => value === undefined) : referenceFields.some(value => value !== undefined)) context.addIssue({ code: "custom", message: "Review registration requires explicit fields and action" });
   const questionFields = [request.questionId, request.questionRevision, request.workerEpoch, request.answer];

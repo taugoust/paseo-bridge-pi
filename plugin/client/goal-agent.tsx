@@ -9,12 +9,14 @@ import { recordedAgentDisplayName, type WorktreeAgentEvidence } from "../shared/
 import { goalAgentRoute, goalAgentEvidence } from "../shared/goal-agent";
 import { PressableRow, goalWorkingColor } from "./goal-ticket-ui";
 import type { DelegatedGoal } from "./delegated-goals";
+import { useGoalText } from "./goal-language";
 
 type Props = Pick<PluginAgentPanelProps, "host" | "agentId" | "workspaceId" | "theme"> & {
   child: NonNullable<DelegatedGoal["child"]>; sessionId: string; runtimeEpoch: string; onOpenAgent?: (id: string) => void;
 };
 const names = new Map<string, string>();
 export function GoalAgent({ child, sessionId, runtimeEpoch, onOpenAgent, ...props }: Props) {
+  const { t } = useGoalText();
   const status = useRpc(harnessStatusRpc), list = useRpc(harnessSubagentsListRpc), route = useRpc(harnessSubagentRouteRpc);
   const [pending, setPending] = useState(false), [error, setError] = useState<string>();
   const mounted = useRef(true), current = useRef("");
@@ -53,22 +55,22 @@ export function GoalAgent({ child, sessionId, runtimeEpoch, onOpenAgent, ...prop
       const resolved = await route({ agentId: request.agentId, workspaceId: request.workspaceId, expectedSessionId: request.sessionId, expectedRuntimeEpoch: request.runtimeEpoch,
         taskId: request.taskId, childId: request.childId, groupId: request.groupId, runtimeId: request.runtimeId, attempt: request.attempt });
       if (mounted.current && current.current === requestKey) onOpenAgent(resolved.agentId);
-    } catch { if (mounted.current && current.current === requestKey) setError("Chat unavailable. Try again."); }
+    } catch { if (mounted.current && current.current === requestKey) setError(t("Chat unavailable. Try again.")); }
     finally { if (mounted.current) setPending(false); }
   }
   const observed = evidence?.item;
   const state = observed?.reaped && !["completed", "failed", "cancelled", "lost", "reaped"].includes(observed.status) ? undefined : observed?.status;
-  const label = state ? ({ running: "Running", completed: "Completed", failed: "Failed", lost: "Lost", cancelled: "Stopped" }[state] ?? state) : "Status unknown";
+  const label = t(state ? ({ running: "Running", completed: "Completed", failed: "Failed", lost: "Lost", cancelled: "Stopped" }[state] ?? state) : "Status unknown");
   const rowStyle = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 3, paddingHorizontal: 6, marginHorizontal: -6, borderRadius: 4, minHeight: 44 } as const;
   const content = <>
       <View accessibilityLabel={label} style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: state === "running" ? goalWorkingColor : state === "completed" ? colors.statusSuccess : state === "failed" || state === "lost" ? colors.statusDanger : colors.foregroundMuted }} />
-      <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{name ?? names.get(identity) ?? "Goal agent"}</Text>
+      <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{name ?? names.get(identity) ?? t("Goal agent")}</Text>
       <Text style={{ color: state === "completed" ? colors.statusSuccess : colors.foregroundMuted, fontSize: 12 }}>{state ? label : ""}</Text>
       <View style={{ flex: 1 }} />
-      {request && onOpenAgent ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, fontWeight: "500" }}>{pending ? "Opening…" : "Open chat"}</Text> : null}
+      {request && onOpenAgent ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, fontWeight: "500" }}>{t(pending ? "Opening…" : "Open chat")}</Text> : null}
     </>;
   return <View style={{ gap: 4 }}>
-    {request && onOpenAgent ? <PressableRow colors={colors} onSurface1 disabled={pending} accessibilityRole="button" accessibilityLabel="Open chat" onPress={() => void open()} style={rowStyle}>{content}</PressableRow>
+    {request && onOpenAgent ? <PressableRow colors={colors} onSurface1 disabled={pending} accessibilityRole="button" accessibilityLabel={t("Open chat")} onPress={() => void open()} style={rowStyle}>{content}</PressableRow>
       : <View style={rowStyle}>{content}</View>}
     {error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{error}</Text> : null}
   </View>;
