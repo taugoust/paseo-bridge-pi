@@ -16,7 +16,7 @@ The complete required copyright and MIT permission notice is retained in
 | `client/panel.tsx` (`TicketRow`, `ProgressBar`, `Segment`) and `client/time-bar.tsx` | `goal-ticket-ui.tsx`: compact goal rows and thin segmented bar; equal checklist segments, explicit task states, counts instead of percentages/time estimates; no shimmer or time-based inference. |
 | `client/ticket-dialog.tsx` (`TicketStoryView`, `TimelineRow`, activity rows) | `plugin/client/delegated-goals.tsx` and `goal-ticket-ui.tsx`: summary/status/activity/bar/agent hierarchy followed by content tabs and actual timestamped rows. Detail stays in the Work workspace panel, not a modal. |
 | `client/ticket-dialog.tsx` (`AgentRow`) | `plugin/client/goal-agent.tsx`: compact assigned-agent line; exact dedicated-child inventory correlation and existing route-time authorization replace upstream agent-ID-only navigation. |
-| `client/write-up.tsx` (`WriteUp` inset and text styles) | `delegated-goals.tsx`: actual objective/checklist and create/edit form in the quiet inset. No source-file preview or attachment subsystem. |
+| `client/write-up.tsx` (`WriteUp` inset and text styles) | `delegated-goals.tsx`: actual objective/checklist and create/edit form in the quiet inset. The optional, explicitly registered source/review subsystem now previews bounded text and PNG or opens HTTPS links; it does not copy upstream HTML/video/host-launch galleries. |
 | `client/questions.tsx` (`QuestionView`, `QuestionDetail`, answer presentation) | `plugin/client/goal-questions.tsx`: prompt/options/description/selected-answer hierarchy. **Direct authenticated questionnaire answers replace Copy-to-chat**. |
 
 Also inspected upstream `index.client.tsx`, `client/dialog-stack.tsx`,
@@ -64,7 +64,21 @@ Unassigned, Assigned (parent session), and Delegated (dedicated child) remain
 separate groups in the same ticket list/detail UI, including completed history.
 Assigned records are a read-only presentation of the existing snapshot, not a
 migration into the child registry. Missing history, questions, and historical
-usage remain unavailable rather than being invented. Execution controls and
+usage remain unavailable rather than being invented. Launch models come from the
+authenticated child launcher and are labeled as launch metadata, never guessed from
+the parent/default model. Observation health and engine blocker/wake evidence remain
+separate from goal lifecycle, checklist progress, and child navigation authority.
+
+`capabilities.goalReview` enables explicit `goals.reference` registration and the
+read-only `workflows_review` bridge RPC. Both require the existing session/runtime
+binding and exact goal revision; the producer also checks the registered reference's
+goal/task/child/attempt and the retained native task's read policy/workspace root.
+Only UTF-8 text (32 KiB), bounded PNG (256 KiB, 16 million pixels) and HTTPS links are
+supported. Symlinks/traversal, changed/deleted files and arbitrary preview paths are
+rejected. Markup is selectable source text, never executed. Registration does not
+change a terminal outcome. User-initiated JSON export uses the existing copy surface,
+not automatic repo writes. Producer and bridge pins must be updated together for
+these additive strict-schema fields; older producers omit unavailable metadata. Execution controls and
 verified child links remain exclusive to the registry's dedicated-child path.
 `goalAgentRoute` requires a complete, fresh inventory, exact task **and** child,
 matching parent session, job/group and attempt, current runtime and native

@@ -8,6 +8,7 @@ import { openGoalForm } from "./goal-form";
 import { GoalQuestions } from "./goal-questions";
 import { assignedTickets, type AssignedTicket } from "./assigned-goals";
 import { goalRecordTime } from "./goal-history";
+import { GoalRecordedDetails } from "./goal-recorded-details";
 import type { z } from "zod";
 import type { delegatedGoalEntrySchema, workflowSnapshotSchema } from "../shared/workflows";
 
@@ -20,6 +21,7 @@ type Props = {
   completedAssigned?: z.infer<typeof workflowSnapshotSchema>["completedGoals"];
   registry: DelegatedGoalRegistry;
   renderAgent?: (goal: DelegatedGoal) => ReactNode;
+  renderReview?: (goal: DelegatedGoal) => ReactNode;
   colors: PresentationColors;
   identity: string;
   locked: boolean;
@@ -103,7 +105,7 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
   </View>;
 }
 
-export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, model, limits, post, renderAgent }: Props) {
+export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, model, limits, post, renderAgent, renderReview }: Props) {
   const allEntries: Ticket[] = [...registry.entries, ...assignedTickets(assignedGoal, completedAssigned)];
   const [width, setWidth] = useState(0);
   const [selected, setSelected] = useViewState<string | null>(identity, "selected", allEntries.length ? null : "new");
@@ -280,7 +282,8 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
               {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || taskCapacity || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
             </View> : null}
           </View>
-          {!goal.assigned && goal.observation?.state === "unavailable" ? <Metadata colors={colors}>Live state unavailable{goal.observation.at ? ` · Last observed ${goalRecordTime(goal.observation.at)}` : ""}</Metadata> : null}
+          {!goal.assigned ? <GoalRecordedDetails key={`${identity}/${goal.id}`} colors={colors} goal={goal} /> : null}
+          {!goal.assigned ? renderReview?.(goal) : null}
           {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>Summary</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
           </View> : null}
           </View>

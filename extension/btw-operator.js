@@ -153,7 +153,7 @@ export function validateBtwEnvelope(value, identity, wireType = "btw") {
 		value.serviceEpoch === identity.serviceEpoch &&
 		value.request?.sessionId === identity.sessionId &&
 		value.request?.serviceEpoch === identity.serviceEpoch &&
-		["snapshot", "start", "send", "cancel", "remove"].includes(
+		["snapshot", "start", "send", "cancel", "remove", ...(wireType === "workflows" ? ["review"] : [])].includes(
 			value.request?.operation,
 		)
 	);

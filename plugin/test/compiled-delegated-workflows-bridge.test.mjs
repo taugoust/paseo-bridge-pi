@@ -26,6 +26,7 @@ test('compiled delegated controls cross the real private bridge with session/run
   received.push(request);
   if(request.sessionId!==identity.sessionId||request.serviceEpoch!==identity.serviceEpoch)throw Error('Stale fixture service identity');
   if(request.operation==='snapshot')return snapshot;
+  if(request.operation==='review')return {sessionId:identity.sessionId,serviceEpoch:identity.serviceEpoch,preview:{kind:'text',text:'Explicitly registered file'}};
   if(request.action==='goals.edit')throw Error('Metadata edit rejected by the core service');
   if(['goals.limits','goal.limits'].includes(request.action))return snapshot;
   assert.equal(request.action,'goals.create');assert.equal(request.expectedGoalId,null);
@@ -56,6 +57,12 @@ test('compiled delegated controls cross the real private bridge with session/run
   snapshot.goal={id:'assigned-contract',text:'Keep assigned objective',status:'active',tasks:[],waiting:null,iteration:1,tokensUsed:100,tokenBudget:null,automaticTurns:8,noProgressTurns:3,safetyPauseCause:null,summary:null,policyRevision:7,continuationLimits:{automaticTurns:10},effectiveLimits:{automaticTurns:10,noProgressTurns:2}};
   const assigned=await invoke('workflows_control',{...input,request:{...limits,requestId:randomUUID(),action:'goal.limits',expectedGoalId:'assigned-contract',expectedActivationId:'activation-1',expectedPolicyRevision:7}});
   assert.equal(assigned.snapshot.goal.policyRevision,7);assert.equal(received.at(-1).action,'goal.limits');assert.equal(received.at(-1).expectedPolicyRevision,7);
+  const reviewInput={...target,expectedRuntimeEpoch:identity.runtimeEpoch,sessionId:identity.sessionId,serviceEpoch:identity.serviceEpoch,expectedGoalId:result.snapshot.delegatedGoals.entries[0].id,expectedEntryRevision:1,referenceId:randomUUID()};
+  assert.deepEqual(await invoke('workflows_review',reviewInput),{kind:'text',text:'Explicitly registered file'});
+  assert.equal(received.at(-1).referenceId,reviewInput.referenceId);
+  await assert.rejects(invoke('workflows_review',{...reviewInput,path:'/etc/passwd'}));
+  await assert.rejects(invoke('workflows_review',{...reviewInput,expectedRuntimeEpoch:randomUUID()}));
+  await assert.rejects(invoke('workflows_review',{...reviewInput,serviceEpoch:randomUUID()}));
   const count=received.length;
   await assert.rejects(invoke('workflows_control',{...input,expectedRuntimeEpoch:randomUUID()}));
   await assert.rejects(invoke('workflows_control',{...input,request:{...input.request,serviceEpoch:randomUUID()}}));

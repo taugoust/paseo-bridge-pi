@@ -14,7 +14,7 @@ import { foregroundTasksRpc, foregroundTasksStatusRpc } from "./shared/foregroun
 import { createAccountControlsHandlers } from "./server/account-controls";
 import { createBtwHandlers } from "./server/btw";
 import { createWorkflowsHandlers } from "./server/workflows";
-import { workflowsStatusRpc, workflowsControlRpc } from "./shared/workflows";
+import { workflowsStatusRpc, workflowsControlRpc, workflowsReviewRpc } from "./shared/workflows";
 import { btwStatusRpc, btwControlRpc } from "./shared/btw";
 import { accountControlsStatusRpc, accountControlsSwitchRpc } from "./shared/account-controls";
 
@@ -40,6 +40,7 @@ export default function contribute(server: PluginServerContext) {
   const workflows = createWorkflowsHandlers();
   server.handle(workflowsStatusRpc, workflows.status);
   server.handle(workflowsControlRpc, workflows.control);
+  server.handle(workflowsReviewRpc, workflows.review);
   const btw = createBtwHandlers();
   server.handle(btwStatusRpc, btw.status);
   server.handle(btwControlRpc, btw.control);

@@ -21,7 +21,28 @@ export const goalStorySchema = z.object({
   activity: z.array(z.object({ id: z.string().min(1).max(128), at: z.number().int().nonnegative().max(8640000000000000), text: z.string().min(1).max(4000) }).strict()).max(200),
   questions: z.array(goalQuestionSchema).max(100).optional(),
 }).strict();
+export const goalReviewReferenceSchema = z.object({
+  id: z.string().uuid(), goalId: z.string().uuid(), taskId: z.string().min(1).max(128), childId: z.string().min(1).max(128), attempt: z.number().int().positive(),
+  title: z.string().min(1).max(160), role: z.enum(["source", "deliverable"]), kind: z.enum(["text", "image", "link"]), at: z.number().int().nonnegative(), target: z.string().min(1).max(4096),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), bytes: z.number().int().nonnegative().max(256 * 1024).optional(), mime: z.enum(["text/plain", "image/png"]).optional(),
+}).strict().superRefine((ref, context) => {
+  if (ref.kind === "link") {
+    let safe = false;try { const url = new URL(ref.target);safe = url.protocol === "https:" && !url.username && !url.password; } catch {}
+    if (!safe || ref.sha256 !== undefined || ref.bytes !== undefined || ref.mime !== undefined) context.addIssue({ code: "custom", message: "Invalid review link" });
+  } else if (!ref.sha256 || ref.bytes === undefined || (ref.kind === "text" ? ref.mime !== "text/plain" || ref.bytes > 32 * 1024 : ref.mime !== "image/png")) context.addIssue({ code: "custom", message: "Invalid review file" });
+});
+export const goalReviewPreviewSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("text"), text: z.string().max(32 * 1024) }).strict(),
+  z.object({ kind: z.literal("image"), dataUri: z.string().max(360 * 1024).regex(/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/) }).strict(),
+  z.object({ kind: z.literal("link"), url: z.string().max(4096).url().refine(value => { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password; }) }).strict(),
+]);
 export const delegatedGoalEntrySchema = z.object({
+  review: z.array(goalReviewReferenceSchema).max(16).optional(),
+  diagnostics: z.object({
+    waitDeadline: z.number().nonnegative().nullable().optional(), lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
+    lastWake: z.object({ at: z.number().nonnegative(), reason: z.enum(["deadline", "custom_message", "user_input", "explicit_resume"]), customType: z.string().max(128).optional() }).strict().nullable().optional(),
+    lastBlocker: z.object({ at: z.number().nonnegative(), reason: z.string().max(1000), evidence: z.string().max(4000), repeatedTurns: z.number().int().nonnegative() }).strict().nullable().optional(),
+  }).strict().optional(),
   story: goalStorySchema.optional(),
   observation: z.object({ state: z.enum(["current", "unavailable"]), at: z.number().int().nonnegative().optional(), reason: z.string().max(1000).optional() }).strict().optional(),
   policyRevision: z.number().int().positive().optional(),
@@ -33,12 +54,14 @@ export const delegatedGoalEntrySchema = z.object({
 	continuationLimits: continuationLimitsSchema.optional(),
 	automaticTurns: z.number().int().nonnegative(), noProgressTurns: z.number().int().nonnegative(),
 	summary: z.string().max(6000).nullable(), waiting: z.string().max(1000).nullable(),
-}).strict();
+}).strict().superRefine((entry, context) => {
+  if (entry.review?.some(ref => ref.goalId !== entry.id)) context.addIssue({ code: "custom", message: "Review reference belongs to another goal" });
+});
 export const workflowSnapshotSchema = z
 	.object({
 		protocol: z.literal(1),
 		capabilities: z
-			.object({ createPausedGoal: z.boolean().optional(), delegatedGoals: z.boolean().optional(), delegatedGoalExecution: z.boolean().optional(), goalLimitEditing: z.boolean().optional() }).strict()
+			.object({ createPausedGoal: z.boolean().optional(), delegatedGoals: z.boolean().optional(), delegatedGoalExecution: z.boolean().optional(), goalLimitEditing: z.boolean().optional(), goalReview: z.boolean().optional() }).strict()
 			.optional(),
 		delegatedGoals: z.object({ version: z.literal(1), revision: z.number().int().nonnegative(), entries: z.array(delegatedGoalEntrySchema).max(1000) }).strict().optional(),
 		sessionId: id,
@@ -207,7 +230,7 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 			...base,
 			operation: z.literal("start"),
 			action: z.enum([
-				"goals.create", "goals.start", "goals.pause", "goals.resume", "goals.edit", "goals.limits", "goals.clear", "goals.add_task", "goals.answer",
+				"goals.create", "goals.start", "goals.pause", "goals.resume", "goals.edit", "goals.limits", "goals.clear", "goals.add_task", "goals.answer", "goals.reference",
 				"worktree.add",
 				"worktree.remove",
 				"worktree.prune",
@@ -230,6 +253,7 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
       questionRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
       workerEpoch: z.string().min(1).max(128).optional(),
       answer: questionnaireAnswerSchema.optional(),
+      reviewTitle: z.string().min(1).max(160).optional(), reviewTarget: z.string().min(1).max(4096).optional(), reviewRole: z.enum(["source", "deliverable"]).optional(),
 			expectedRegistryRevision: z.number().int().nonnegative().optional(),
 			text: z.string().max(503).optional(),
 			objective: z.string().max(4000).optional(),
@@ -257,6 +281,8 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 ]).superRefine((request, context) => {
 	if (request.operation !== "start") return;
 	if (request.tokenBudget === null && !["goals.edit", "goals.limits", "goal.limits"].includes(request.action)) context.addIssue({ code: "custom", path: ["tokenBudget"], message: "Only delegated goal edits accept null to remove a cap" });
+  const referenceFields = [request.reviewTitle, request.reviewTarget, request.reviewRole];
+  if (request.action === "goals.reference" ? referenceFields.some(value => value === undefined) : referenceFields.some(value => value !== undefined)) context.addIssue({ code: "custom", message: "Review registration requires explicit fields and action" });
   const questionFields = [request.questionId, request.questionRevision, request.workerEpoch, request.answer];
   if (request.action === "goals.answer" ? questionFields.some(value => value === undefined) : questionFields.some(value => value !== undefined))
     context.addIssue({ code: "custom", path: ["answer"], message: "Question answers require exact request identity and the goals.answer action" });
@@ -309,5 +335,6 @@ export const workflowsControlRpc = defineRpc({
 		})
 		.strict(),
 });
+export const workflowsReviewRpc = defineRpc({ name: "workflows_review", input: z.object({ ...target, expectedRuntimeEpoch: z.string().uuid(), sessionId: id, serviceEpoch: z.string().uuid(), expectedGoalId: z.string().uuid(), expectedEntryRevision: z.number().int().positive(), referenceId: z.string().uuid() }).strict(), output: goalReviewPreviewSchema });
 export type WorkflowSnapshot = z.infer<typeof workflowSnapshotSchema>;
 export type WorkflowRequest = z.infer<typeof workflowRequestSchema>;

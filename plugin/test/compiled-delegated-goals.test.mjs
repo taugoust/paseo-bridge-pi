@@ -13,8 +13,8 @@ const {compilePlugin}=await import(pathToFileURL(resolve(compilerPath)));
 const fixture=await mkdtemp(resolve(tmpdir(),'delegated-goals-ui-'));
 after(()=>rm(fixture,{recursive:true,force:true}));
 for(const directory of ['client','shared']) await cp(fileURLToPath(new URL(`../${directory}`,import.meta.url)),resolve(fixture,directory),{recursive:true});
-await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals } from "./client/delegated-goals"; export { goalAgentRoute } from "./shared/goal-agent";');
-await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema }; }');
+await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals } from "./client/delegated-goals"; export { goalAgentRoute } from "./shared/goal-agent"; export { GoalReview } from "./client/goal-review";');
+await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema }; }');
 const {clientBundle,serverBundle}=await compilePlugin({client:resolve(fixture,'index.client.tsx'),server:resolve(fixture,'index.server.ts')});
 const schemas=(0,eval)(serverBundle)(name=>name==='@getpaseo/plugin'?{defineRpc:value=>value}:require(name)).default();
 const colors={foreground:'#eee',foregroundMuted:'#999',surface1:'#222',surface2:'#333',border:'#444',accent:'#eee',accentForeground:'#111',statusWarning:'#fa0',statusDanger:'#f66',statusSuccess:'#63b887'};
@@ -25,14 +25,17 @@ function harness() {
   if(name==='react')return {
    useState(initial){const local=context;const i=local.cursor++;if(!(i in local.slots))local.slots[i]=typeof initial==='function'?initial():initial;return [local.slots[i],next=>{local.slots[i]=typeof next==='function'?next(local.slots[i]):next;}];},
    useSyncExternalStore(_subscribe,get){return get();},
+   useRef(initial){const local=context;const i=local.cursor++;if(!(i in local.slots))local.slots[i]={current:initial};return local.slots[i];},
+   useEffect(){},
   };
   if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};
-  if(name==='react-native')return {View:'View',Text:'Text',Pressable:'Pressable'};
+  if(name==='react-native')return {View:'View',Text:'Text',Pressable:'Pressable',Image:'Image'};
+  if(name==='@getpaseo/plugin/client')return {openExternalUrl:async()=>{}};
   if(name==='@getpaseo/plugin/client/react-native')return {TextInput:'TextInput',ScrollView:'ScrollView'};
   if(name==='@getpaseo/plugin/client/ui')return {Icon:'Icon',SettingsSection:'SettingsSection',SettingsCard:'SettingsCard',SettingsAction:'SettingsAction',Modal:Object.assign(props=>jsx('Modal',props),{Content:'ModalContent'})};
   return require(name);
  };
- const {DelegatedGoals,goalAgentRoute}=(0,eval)(clientBundle)(load);
+ const {DelegatedGoals,goalAgentRoute,GoalReview}=(0,eval)(clientBundle)(load);
  function walk(node,path='root') {
   if(Array.isArray(node))return node.flatMap((item,index)=>walk(item,`${path}/${index}`));
   if(!node||typeof node!=='object')return [];
@@ -41,7 +44,7 @@ function harness() {
   }
   return [node,...walk(node.props.children,`${path}/children`)];
  }
- return {draw:props=>walk({type:DelegatedGoals,props}),remount:()=>states.clear(),goalAgentRoute};
+ return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),remount:()=>states.clear(),goalAgentRoute};
 }
 const entry=(id,status='paused')=>({id,revision:2,text:`Goal ${id}`,status,tasks:[],child:null,tokenBudget:null,tokensUsed:0,automaticTurns:0,noProgressTurns:0,summary:null,waiting:null});
 const button=(nodes,label)=>nodes.find(node=>node.type==='Pressable'&&node.props.accessibilityLabel===label);
@@ -359,6 +362,29 @@ test('history is bounded, pending questions remain discoverable and context neve
  assert.ok(nodes.some(n=>n.props.children==='Authored background'));assert.ok(JSON.stringify(nodes).includes('Recommended'));assert.equal(button(nodes,'Submit answers').props.disabled,true);assert.equal(nodes.find(n=>n.props.accessibilityRole==='radio').props['aria-checked'],false);
  nodes.find(n=>n.props.accessibilityLabel==='Activity').props.onPress();nodes=h.draw(props);assert.equal(nodes.filter(n=>typeof n.props.children==='string'&&/^Update \d+$/.test(n.props.children)).length,10);assert.ok(nodes.some(n=>n.props.children==='Update 20'));assert.ok(!nodes.some(n=>n.props.children==='Update 0'));button(nodes,'Show older updates').props.onPress();nodes=h.draw(props);assert.equal(nodes.filter(n=>typeof n.props.children==='string'&&/^Update \d+$/.test(n.props.children)).length,20);assert.ok(JSON.stringify(nodes).includes('Earlier records omitted'));
  g.observation={state:'unavailable',at:1};nodes=h.draw(props);assert.ok(JSON.stringify(nodes).includes('Recorded working'));nodes.find(n=>n.props.accessibilityLabel==='Questions').props.onPress();nodes=h.draw(props);assert.equal(button(nodes,'Cancel questions').props.disabled,true);
+});
+
+test('review registration preserves the opened revision, previews registered IDs and exports only on request',async()=>{
+ const h=harness(),goal=entry('review');goal.child={taskId:'task',childId:'child',jobId:'job',attempt:1};goal.review=[{id:'ref',goalId:goal.id,taskId:'task',childId:'child',attempt:1,title:'Spec',role:'source',kind:'text',at:1,target:'spec.md'}];
+ const calls=[];let resolvePreview;const props={goal,colors,disabled:false,available:true,register:async fields=>{calls.push(fields);return false;},preview:async(id,revision)=>{calls.push({id,revision});return new Promise(resolve=>resolvePreview=resolve);}};
+ let nodes=h.drawReview(props);assert.ok(!JSON.stringify(nodes).includes('spec.md'));button(nodes,'Review references (1)').props.onPress();nodes=h.drawReview(props);button(nodes,'Review Spec').props.onPress();await tick();assert.deepEqual(calls[0],{id:'ref',revision:2});
+ goal.revision++;nodes=h.drawReview(props);resolvePreview({kind:'text',text:'Late private content'});await tick();nodes=h.drawReview(props);assert.ok(!JSON.stringify(nodes).includes('Late private content'));
+ button(nodes,'Register reference').props.onPress();nodes=h.drawReview(props);textbox(nodes,'Reference title').props.onChangeText('Result');nodes=h.drawReview(props);textbox(nodes,'Reference path or HTTPS URL').props.onChangeText('result.txt');nodes=h.drawReview(props);goal.revision++;nodes=h.drawReview(props);assert.equal(button(nodes,'Save reference').props.disabled,true);
+ button(nodes,'Export snapshot').props.onPress();nodes=h.drawReview(props);assert.ok(JSON.stringify(nodes).includes('exportedAt'));assert.equal(calls.length,1,'export never reads files or mutates sessions');
+});
+
+test('delegated engine blocker evidence is disclosed without changing goal or task status',()=>{
+ const h=harness(),g=entry('diagnostics','paused');g.diagnostics={lastBlocker:{at:1,reason:'External dependency',evidence:'Exact engine failure',repeatedTurns:2},lastWake:{at:2,reason:'explicit_resume'}};
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);assert.ok(!nodes.some(n=>n.type==='Text'&&n.props.children==='Exact engine failure'));button(nodes,'Recorded details').props.onPress();nodes=h.draw(props);assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children==='Exact engine failure'));assert.equal(g.status,'paused');assert.deepEqual(g.tasks,[]);
+});
+
+test('review contracts reject arbitrary preview paths, unsafe links and mismatched file metadata',()=>{
+ const ref={id:'11111111-1111-4111-8111-111111111111',goalId:'22222222-2222-4222-8222-222222222222',taskId:'task',childId:'child',attempt:1,title:'Spec',role:'source',kind:'link',at:1,target:'https://example.test/spec'};
+ assert.equal(schemas.goalReviewReferenceSchema.safeParse(ref).success,true);
+ for(const changed of [{...ref,target:'http://example.test'},{...ref,target:'https://user:pass@example.test'},{...ref,kind:'image'},{...ref,kind:'text',bytes:40000,mime:'text/plain',sha256:'a'.repeat(64)},{...ref,path:'/etc/passwd'}])assert.equal(schemas.goalReviewReferenceSchema.safeParse(changed).success,false);
+ const request={operation:'start',action:'goals.reference',sessionId:'s',serviceEpoch:ref.id,requestId:ref.id,expectedGoalId:ref.goalId,expectedEntryRevision:1,reviewTitle:'Spec',reviewTarget:'spec.md',reviewRole:'source'};
+ assert.equal(schemas.workflowRequestSchema.safeParse(request).success,true);
+ assert.equal(schemas.workflowRequestSchema.safeParse({...request,action:'goals.start'}).success,false);
 });
 
 test('limit RPC schemas require exact policy routing and explicit nullable limits',()=>{
