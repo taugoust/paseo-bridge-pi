@@ -10,6 +10,7 @@ import type { goalQuestionSchema } from "../shared/workflows";
 import type { questionnaireAnswerSchema } from "../shared/foreground-tasks";
 import { Metadata, NativeButton, type PresentationColors } from "./presentation";
 import { PressableRow, goalWorkingColor } from "./goal-ticket-ui";
+import { goalRecordTime } from "./goal-history";
 export type GoalQuestion = z.infer<typeof goalQuestionSchema>;
 export type GoalAnswer = z.infer<typeof questionnaireAnswerSchema>;
 type Draft = { revision: number; values: Record<string, string> };
@@ -18,13 +19,15 @@ export function GoalQuestions({ colors, questions, identity, revision, disabled,
   colors: PresentationColors; questions: GoalQuestion[]; identity: string; revision: number; disabled: boolean;
   onAnswer(question: GoalQuestion, answer: GoalAnswer, openedRevision: number): Promise<boolean>;
 }) {
+  const [historyLimit, setHistoryLimit] = useState(10);
   if (!questions.length) return <Metadata colors={colors}>No recorded questions</Metadata>;
   const pending = questions.filter(question => question.status === "pending");
   const settled = questions.filter(question => question.status !== "pending");
   return <View style={{ gap: 16 }}>
     {pending.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
     {settled.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>Question history</Text> : null}
-    {settled.map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
+    {[...settled].reverse().slice(0, historyLimit).map(question => <QuestionCard key={`${identity}/${question.id}/${question.workerEpoch}/${question.revision}`} {...{ colors, question, identity, revision, disabled, onAnswer }} />)}
+    {settled.length > historyLimit ? <NativeButton colors={colors} label="Show older questions" onPress={() => setHistoryLimit(historyLimit + 10)} /> : null}
   </View>;
 }
 function QuestionCard({ colors, question, identity, revision, disabled, onAnswer }: {
@@ -50,12 +53,14 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
     finally { setSending(false); }
   }
   return <View style={{ gap: 10 }}>
+    <Text accessibilityLabel={new Date(question.at).toLocaleString()} style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>Asked {goalRecordTime(question.at)}</Text>
     {question.request.questions.map(item => {
       const answer = question.answer?.answers.find(answer => answer.id === item.id);
       return <View key={item.id} style={{ gap: 8 }}>
         {item.label ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{item.label}</Text> : null}
         <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{item.prompt}</Text>
         {pending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Pending questionnaire response</Text> : null}
+        {item.background ? <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{item.background}</Text> : null}
         {item.options.map(option => {
           const chosen = pending ? draft.values[item.id] === option.value : answer?.value === option.value;
           return <PressableRow key={option.value} colors={colors} accessibilityRole="radio" accessibilityLabel={option.label} accessibilityState={{ checked: chosen, disabled: !pending || locked }} aria-checked={chosen} disabled={!pending || locked}
@@ -63,7 +68,7 @@ function QuestionCard({ colors, question, identity, revision, disabled, onAnswer
             style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: chosen ? pending ? goalWorkingColor : colors.statusSuccess : colors.border }}>
             <Text style={{ color: chosen ? pending ? goalWorkingColor : colors.statusSuccess : colors.foregroundMuted, fontSize: 13 }}>{chosen ? "●" : "○"}</Text>
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-              <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{option.label}{!pending && chosen ? " · Your answer" : ""}</Text>
+              <Text style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{option.label}{!pending && chosen ? " · Recorded answer" : ""}{item.recommendation === option.value ? " · Recommended" : ""}</Text>
               {option.description ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{option.description}</Text> : null}
             </View>
           </PressableRow>;

@@ -8,6 +8,7 @@ export type AssignedTicket = Pick<DelegatedGoal, "text" | "status" | "summary"> 
   tasks: NonNullable<NonNullable<Snapshot["goal"]>["tasks"]>;
   child?: never; revision?: number; story?: never;
   activationId?: string;
+  endedAt?: number;
   waitDeadline?: number | null;
   lastTaskUpdateAt?: number | null;
   lastWake?: NonNullable<Snapshot["goal"]>["lastWake"];
@@ -22,7 +23,7 @@ export type AssignedTicket = Pick<DelegatedGoal, "text" | "status" | "summary"> 
 export function assignedTickets(goal: Snapshot["goal"], completed: NonNullable<Snapshot["completedGoals"]> = []): AssignedTicket[] {
   const records: AssignedTicket[] = completed.filter(item => item.id !== goal?.id).map(item => ({
     assigned: true, id: `assigned:${item.id}`, text: item.text,
-    status: item.status === "completed" ? "complete" : "cleared", summary: item.summary, tasks: item.tasks,
+    status: item.status === "completed" ? "complete" : "cleared", summary: item.summary, tasks: item.tasks, endedAt: item.endedAt,
   }));
   if (goal) records.unshift({
     ...goal, assigned: true, sourceGoalId: goal.id, id: `assigned:${goal.id}`, tasks: goal.tasks ?? [],

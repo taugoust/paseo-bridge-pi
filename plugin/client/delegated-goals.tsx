@@ -7,6 +7,7 @@ import { Metadata, NativeButton, type PresentationColors } from "./presentation"
 import { openGoalForm } from "./goal-form";
 import { GoalQuestions } from "./goal-questions";
 import { assignedTickets, type AssignedTicket } from "./assigned-goals";
+import { goalRecordTime } from "./goal-history";
 import type { z } from "zod";
 import type { delegatedGoalEntrySchema, workflowSnapshotSchema } from "../shared/workflows";
 
@@ -199,10 +200,12 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           <Text accessibilityRole="header" selectable style={{ color: colors.foreground, fontSize: 18, lineHeight: 26, fontWeight: "600" }}>{goal.text.split("\n")[0]}</Text>
           <View style={{ gap: 10 }}>
             <View style={{ flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
-              <StatusBadge colors={colors} status={goal.status} waiting={goal.waiting} />
+              <StatusBadge colors={colors} status={goal.status} waiting={goal.waiting} observation={goal.assigned ? undefined : goal.observation} />
               <Text style={{ flex: 1, minWidth: 100, color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{goal.tasks.find(task => task.status === "in_progress")?.text ?? ""}</Text>
             </View>
             <TaskBar colors={colors} tasks={goal.tasks} />
+            {!goal.assigned && goal.story?.questions?.some(q => q.status === "pending") && tab !== "questions" ? button("View pending questions", () => { setSelected(goal.id); setTabs({ ...tabs, [goal.id]: "questions" }); }, false) : null}
+            {goal.assigned && goal.endedAt ? <Metadata colors={colors}>{goalRecordTime(goal.endedAt)}</Metadata> : null}
             {goal.waiting ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.waiting}</Text> : null}
             {goal.assigned ? <View style={{ gap: 4 }}>
               {goal.waiting ? <Metadata colors={colors}>{goal.waitDeadline === undefined ? "Wait deadline unavailable in this runtime" : goal.waitDeadline !== null ? `Safety wake: ${new Date(goal.waitDeadline).toLocaleString()} (when idle)` : "Waiting for an external message or explicit resume; no safety deadline"}</Metadata> : null}
@@ -249,12 +252,13 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
             { id: "activity", label: "Activity", icon: "Activity", count: goal.story?.activity.length },
             { id: "questions", label: "Questions", icon: "MessageCircleQuestion", count: goal.story?.questions?.filter(question => question.status === "pending").length },
           ]} />
-          {tab === "timeline" ? <StoryLog colors={colors} entries={goal.story?.timeline ?? []} timeline /> : null}
-          {tab === "activity" ? <StoryLog colors={colors} entries={goal.story?.activity ?? []} /> : null}
-          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>No recorded questions available for this assigned goal</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision}
-            disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child} onAnswer={(question, answer, openedRevision) => action("answer", {
+          {tab === "timeline" ? <StoryLog key={`${identity}/${goal.id}/timeline`} identity={`${identity}/${goal.id}/timeline`} colors={colors} entries={goal.story?.timeline ?? []} truncated={goal.story?.coverage?.timelineTruncated} timeline /> : null}
+          {tab === "activity" ? <StoryLog key={`${identity}/${goal.id}/activity`} identity={`${identity}/${goal.id}/activity`} colors={colors} entries={goal.story?.activity ?? []} truncated={goal.story?.coverage?.activityTruncated} /> : null}
+          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>No recorded questions available for this assigned goal</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision}
+            disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child || goal.observation?.state === "unavailable"} onAnswer={(question, answer, openedRevision) => action("answer", {
               expectedEntryRevision: openedRevision, questionId: question.id, questionRevision: question.revision, workerEpoch: question.workerEpoch, answer,
             })} /> : null}
+          {tab === "questions" && goal.story?.coverage?.questionsTruncated ? <Metadata colors={colors}>Earlier questions omitted</Metadata> : null}
           {tab === "write-up" ? <View style={{ gap: 12, padding: 14, borderRadius: 8, backgroundColor: colors.surface0 }}>
             {goal.text.trim() !== goal.text.split("\n")[0].trim() ? <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{goal.text}</Text> : null}
           <View style={{ gap: 12 }}>
@@ -276,6 +280,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
               {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || taskCapacity || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
             </View> : null}
           </View>
+          {!goal.assigned && goal.observation?.state === "unavailable" ? <Metadata colors={colors}>Live state unavailable{goal.observation.at ? ` · Last observed ${goalRecordTime(goal.observation.at)}` : ""}</Metadata> : null}
           {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>Summary</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
           </View> : null}
           </View>

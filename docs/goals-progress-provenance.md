@@ -43,6 +43,9 @@ selection, draft persistence and lifecycle protections remain bridge-owned.
 - Optional `questions`, at most 100. Each record has durable ID, revision,
   worker epoch, timestamp, status, the existing **questionnaire-only** request
   DTO, and optional recorded answer/answer time.
+- Optional `coverage` marks actual timeline/activity/question eviction. Missing
+  coverage is unknown, not proof of a complete archive. Timeline and settled
+  history use bounded disclosure; pending questionnaires remain reachable.
 - Missing story means no recorded history, not reconstructed events. No current
   chat prose, file timestamps, tool-call stream, cwd or task-name matching is used.
 
@@ -50,6 +53,10 @@ Question controls send `goals.answer` with the existing workflow session/service
 runtime/request identity, goal ID, opened entry revision, question ID/revision,
 worker epoch and questionnaire answer. The producer must validate the exact
 outstanding request and child, persist receipts and reject stale/replayed answers.
+Pending questionnaire wording is deliberately neutral: this surface is not a
+worker-to-human escalation inbox. The existing authenticated answer route remains
+available; coordinator-first structured guidance is a separate integration, and
+`notify_parent` delivery is not a questionnaire resolution receipt.
 No permission approval DTO is accepted by this action. The UI retains rejected
 answer drafts; a changed entry requires explicit review before resubmission.
 

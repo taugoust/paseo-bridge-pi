@@ -4,7 +4,7 @@
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View, type PressableProps, type ViewStyle } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/ui";
-import type { PresentationColors as Colors } from "./presentation";
+import { NativeButton, type PresentationColors as Colors } from "./presentation";
 import type { DelegatedGoal } from "./delegated-goals";
 import { goalRecordTime } from "./goal-history";
 
@@ -50,16 +50,17 @@ export function PressableRow({ colors, onSurface1 = false, transparentAtRest = t
     return [style, { backgroundColor: !hovered && !pressed && transparentAtRest ? "transparent" : tint }];
   }}>{children}</Pressable>;
 }
-export function recordedGoalStatus(goal: { status: DelegatedGoal["status"]; waiting?: string | null }) {
+export function recordedGoalStatus(goal: { status: DelegatedGoal["status"]; waiting?: string | null; observation?: DelegatedGoal["observation"] }) {
+  if (goal.status === "active" && goal.observation?.state === "unavailable") return "Recorded working";
   return goal.status === "active" && goal.waiting ? "Waiting" : goalStatusLabels[goal.status];
 }
-export function StatusBadge({ colors, status, waiting }: { colors: Colors; status: DelegatedGoal["status"]; waiting?: string | null }) {
+export function StatusBadge({ colors, status, waiting, observation }: { colors: Colors; status: DelegatedGoal["status"]; waiting?: string | null; observation?: DelegatedGoal["observation"] }) {
   const tone = status === "active" ? { fg: "#ffffff", bg: goalWorkingColor, border: goalWorkingColor }
     : status === "complete" ? { fg: colors.statusSuccess, bg: "transparent", border: colors.statusSuccess }
     : status === "blocked" || status === "budget_limited" || status === "usage_limited" ? { fg: colors.statusDanger, bg: "transparent", border: colors.statusDanger }
     : { fg: colors.foregroundMuted, bg: "transparent", border: colors.border };
   return <View style={{ alignSelf: "flex-start", borderWidth: 1, borderColor: tone.border, backgroundColor: tone.bg, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 1 }}>
-    <Text style={{ color: tone.fg, fontSize: 11, lineHeight: 16 }}>{recordedGoalStatus({ status, waiting })}</Text>
+    <Text style={{ color: tone.fg, fontSize: 11, lineHeight: 16 }}>{recordedGoalStatus({ status, waiting, observation })}</Text>
   </View>;
 }
 type TicketTasks = Array<{ id?: string; text: string; status: DelegatedGoal["tasks"][number]["status"] }>;
@@ -80,24 +81,28 @@ export function TaskBar({ colors, tasks }: { colors: Colors; tasks: TicketTasks 
     </View>
   </View>;
 }
-export function GoalTicketRow({ colors, goal, title, selected, onPress }: { colors: Colors; goal: { status: DelegatedGoal["status"]; waiting?: string | null; tasks: TicketTasks }; title: string; selected: boolean; onPress(): void }) {
+export function GoalTicketRow({ colors, goal, title, selected, onPress }: { colors: Colors; goal: { status: DelegatedGoal["status"]; waiting?: string | null; tasks: TicketTasks; story?: DelegatedGoal["story"]; observation?: DelegatedGoal["observation"] }; title: string; selected: boolean; onPress(): void }) {
   return <PressableRow colors={colors} onSurface1={selected} transparentAtRest={!selected} accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ selected }} onPress={onPress}
     style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border, minHeight: 44 }}>
     <View style={{ width: 16, paddingTop: 2, alignItems: "center" }}><Icon name={goal.status === "complete" ? "Check" : goal.status === "active" ? "CirclePlay" : goal.status === "blocked" ? "Ban" : "CirclePause"} size={14} color={goal.status === "complete" ? colors.statusSuccess : goal.status === "active" ? goalWorkingColor : goal.status === "blocked" ? colors.statusDanger : colors.foregroundMuted} /></View>
     <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
       <Text numberOfLines={3} style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{title}</Text>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{recordedGoalStatus(goal)}{goal.tasks.length ? ` · ${taskCounts(goal.tasks).completed}/${goal.tasks.length} tasks` : ""}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{recordedGoalStatus(goal)}{goal.tasks.length ? ` · ${taskCounts(goal.tasks).completed}/${goal.tasks.length} tasks` : ""}{goal.story?.questions?.some(q => q.status === "pending") ? " · Questions pending" : ""}</Text>
     </View>
     <View style={{ paddingTop: 2 }}><Icon name="ChevronRight" size={14} color={colors.foregroundMuted} /></View>
   </PressableRow>;
 }
 
 // TicketStoryView's log rows, without elapsed-time guesses, inferred links or animation.
-export function StoryLog({ colors, entries, timeline = false }: { colors: Colors; entries: Array<{ id: string; at: number; text: string; kind?: string; taskStatus?: string }>; timeline?: boolean }) {
+const storyPages = new Map<string, number>();
+export function StoryLog({ colors, entries, timeline = false, identity = "", truncated }: { colors: Colors; entries: Array<{ id: string; at: number; text: string; kind?: string; taskStatus?: string }>; timeline?: boolean; identity?: string; truncated?: boolean }) {
+  const [limit, setLimit] = useState(() => storyPages.get(identity) ?? 10);
+  const shown = timeline ? entries.slice(-limit) : [...entries].reverse().slice(0, limit);
+  function more() { storyPages.set(identity, limit + 10); setLimit(limit + 10); }
   if (!entries.length) return <Text style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{timeline ? "No recorded timeline yet" : "No progress updates yet"}</Text>;
-  return <View>{entries.map(entry => <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", gap: timeline ? 6 : 12, paddingVertical: 6 }}>
+  return <View>{timeline && entries.length > limit ? <NativeButton colors={colors} label="Show earlier events" onPress={more} /> : null}{shown.map(entry => <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", gap: timeline ? 6 : 12, paddingVertical: 6 }}>
     {timeline ? <View style={{ width: 14, alignItems: "center", paddingTop: 3 }}><Icon name={entry.kind === "created" ? "CirclePlus" : entry.kind === "completed" || entry.taskStatus === "completed" ? "CircleCheck" : entry.kind === "blocked" || entry.taskStatus === "blocked" ? "Ban" : "CircleDot"} size={12} color={entry.kind === "completed" || entry.taskStatus === "completed" ? colors.statusSuccess : entry.kind === "blocked" || entry.taskStatus === "blocked" ? colors.statusDanger : entry.kind === "started" || entry.kind === "resumed" || entry.taskStatus === "in_progress" ? goalWorkingColor : colors.foregroundMuted} /></View> : null}
     <Text selectable style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{entry.text}</Text>
     <Text accessibilityLabel={new Date(entry.at).toLocaleString()} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 19, fontVariant: ["tabular-nums"] }}>{goalRecordTime(entry.at)}</Text>
-  </View>)}</View>;
+  </View>)}{!timeline && entries.length > limit ? <NativeButton colors={colors} label="Show older updates" onPress={more} /> : null}{truncated ? <Text style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>Earlier records omitted</Text> : null}</View>;
 }

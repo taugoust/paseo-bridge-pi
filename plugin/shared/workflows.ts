@@ -14,6 +14,7 @@ export const goalQuestionSchema = z.object({
 // Optional for legacy runtimes; only durable producer records belong here.
 export const goalStorySchema = z.object({
   version: z.literal(1),
+  coverage: z.object({ timelineTruncated: z.boolean().optional(), activityTruncated: z.boolean().optional(), questionsTruncated: z.boolean().optional() }).strict().optional(),
   timeline: z.array(z.object({ id: z.string().min(1).max(128), at: z.number().int().nonnegative().max(8640000000000000),
     kind: z.enum(["created", "started", "paused", "resumed", "blocked", "completed", "cleared", "edited", "task"]),
     text: z.string().min(1).max(4000), taskId: z.string().min(1).max(128).optional(), taskStatus: z.enum(["pending", "in_progress", "completed", "blocked"]).optional() }).strict()).max(200),
@@ -22,6 +23,7 @@ export const goalStorySchema = z.object({
 }).strict();
 export const delegatedGoalEntrySchema = z.object({
   story: goalStorySchema.optional(),
+  observation: z.object({ state: z.enum(["current", "unavailable"]), at: z.number().int().nonnegative().optional(), reason: z.string().max(1000).optional() }).strict().optional(),
   policyRevision: z.number().int().positive().optional(),
 	id: z.string().uuid(), revision: z.number().int().positive(), text: z.string().min(1).max(4000),
 	status: z.enum(["paused", "active", "blocked", "usage_limited", "budget_limited", "complete", "cleared"]),

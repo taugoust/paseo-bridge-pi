@@ -351,6 +351,16 @@ test('history renders calendar day and model is only an authenticated child laun
  nodes.find(n=>n.props.accessibilityLabel==='Timeline').props.onPress();nodes=h.draw(props);assert.ok(nodes.some(n=>n.type==='Text'&&typeof n.props.children==='string'&&n.props.children.includes('2020')));
 });
 
+test('history is bounded, pending questions remain discoverable and context never preselects a recommendation',()=>{
+ const h=harness(),g=entry('bounded','active');g.child={taskId:'task',childId:'child',jobId:'job',attempt:1};
+ g.story={version:1,timeline:[],activity:Array.from({length:21},(_,i)=>({id:`a${i}`,at:100+i,text:`Update ${i}`})),coverage:{activityTruncated:true},questions:[{id:'q',revision:1,at:1,workerEpoch:'epoch',status:'pending',request:{kind:'questionnaire',questions:[{id:'x',prompt:'Pick?',background:'Authored background',recommendation:'yes',options:[{value:'yes',label:'Yes'}],allowOther:false}]}}]};
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
+ let nodes=h.draw(props);assert.ok(JSON.stringify(nodes).includes('Questions pending'));button(nodes,g.text).props.onPress();nodes=h.draw(props);button(nodes,'View pending questions').props.onPress();nodes=h.draw(props);
+ assert.ok(nodes.some(n=>n.props.children==='Authored background'));assert.ok(JSON.stringify(nodes).includes('Recommended'));assert.equal(button(nodes,'Submit answers').props.disabled,true);assert.equal(nodes.find(n=>n.props.accessibilityRole==='radio').props['aria-checked'],false);
+ nodes.find(n=>n.props.accessibilityLabel==='Activity').props.onPress();nodes=h.draw(props);assert.equal(nodes.filter(n=>typeof n.props.children==='string'&&/^Update \d+$/.test(n.props.children)).length,10);assert.ok(nodes.some(n=>n.props.children==='Update 20'));assert.ok(!nodes.some(n=>n.props.children==='Update 0'));button(nodes,'Show older updates').props.onPress();nodes=h.draw(props);assert.equal(nodes.filter(n=>typeof n.props.children==='string'&&/^Update \d+$/.test(n.props.children)).length,20);assert.ok(JSON.stringify(nodes).includes('Earlier records omitted'));
+ g.observation={state:'unavailable',at:1};nodes=h.draw(props);assert.ok(JSON.stringify(nodes).includes('Recorded working'));nodes.find(n=>n.props.accessibilityLabel==='Questions').props.onPress();nodes=h.draw(props);assert.equal(button(nodes,'Cancel questions').props.disabled,true);
+});
+
 test('limit RPC schemas require exact policy routing and explicit nullable limits',()=>{
  const base={operation:'start',action:'goal.limits',sessionId:'session',serviceEpoch:'11111111-1111-4111-8111-111111111111',requestId:'22222222-2222-4222-8222-222222222222',expectedGoalId:'assigned',expectedActivationId:'activation-1',expectedPolicyRevision:1,tokenBudget:null,continuationLimits:{automaticTurns:null,noProgressTurns:null}};
  assert.equal(schemas.workflowRequestSchema.safeParse(base).success,true);
