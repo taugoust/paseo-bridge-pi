@@ -1270,8 +1270,8 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         const service = activeAccountControlsService(), identity = activeAccountControlsDescriptor(), t = transport, ctx = latestCtx;
         if (!service || !identity || !t || !ctx) throw new Error("Account-controls service unavailable or stale");
         const assertCurrent = () => {
-          if (transport !== t || latestCtx !== ctx || (globalThis as any).__paeAccountControlsV1 !== service || activeAccountControlsService() !== service || !t.connected
-            || currentAgentId !== identity.agentId || currentSessionFile !== t.sessionFile || ctx.sessionManager.getSessionId() !== identity.sessionId || t.operatorEpoch !== identity.runtimeEpoch)
+          if (transport !== t || (globalThis as any).__paeAccountControlsV1 !== service || activeAccountControlsService() !== service || !t.connected
+            || currentAgentId !== identity.agentId || currentSessionFile !== t.sessionFile || latestCtx?.sessionManager.getSessionId() !== identity.sessionId || t.operatorEpoch !== identity.runtimeEpoch)
             throw new Error("Account-controls identity changed during request");
         };
         // An older producer can ignore extra fields. Never let a Codex mutation
