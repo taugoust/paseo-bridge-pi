@@ -7,7 +7,7 @@ import { callAccountControls, readAccountControlsDescriptor, validateAccountCont
 // fields to snapshots consumed by existing clients' strict RPC validators.
 function publicSnapshot(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return accountControlsSnapshotSchema.parse(value);
-  const { sessionRouting: _routing, ...snapshot } = value as Record<string, unknown>;
+  const { sessionRouting: _routing, guardedDefaultSwitchVersion: _guardedSwitch, ...snapshot } = value as Record<string, unknown>;
   return accountControlsSnapshotSchema.parse(snapshot);
 }
 

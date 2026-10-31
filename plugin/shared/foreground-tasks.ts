@@ -18,7 +18,7 @@ const interactionAnswer = z.discriminatedUnion("kind", [
 ]);
 const task = z.object({
   taskId: z.string().min(1).max(256), childId: z.string().min(1).max(256), workerEpoch: z.string().max(256), groupId: z.string().min(1).max(256),
-  attempt: z.number().int().min(1), title: z.string().max(1000), model: z.string().max(512).optional(), status: z.enum(["pending", "running", "waiting-input", "waiting-permission", "completed", "failed", "cancelled", "lost", "reaped"]),
+  attempt: z.number().int().min(1), title: z.string().max(1000), model: z.string().max(512).optional(), status: z.enum(["pending", "running", "waiting", "waiting-input", "waiting-permission", "completed", "failed", "cancelled", "lost", "reaped"]),
   createdAt: z.string().max(100), updatedAt: z.string().max(100), pendingInteractions: z.number().int().min(0).max(1000), canPrompt: z.boolean(), canStop: z.boolean(),
 }).strict();
 const interaction = z.object({ id: z.string().min(1).max(256), workerEpoch: z.string().min(1).max(256), createdAt: z.string().max(100), request: interactionInput }).strict();

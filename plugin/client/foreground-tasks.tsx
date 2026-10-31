@@ -91,6 +91,7 @@ export function contributeForegroundTasks(client: PluginClientContext) {
 		const running = items.filter(
 			(task) => task.status === "running" || task.status === "pending",
 		).length;
+		const waitingTasks = items.filter((task) => task.status === "waiting").length;
 		const questions = items.filter(
 			(task) => task.status === "waiting-input",
 		).length;
@@ -104,14 +105,14 @@ export function contributeForegroundTasks(client: PluginClientContext) {
 		).length;
 		const waiting = questions + permissions;
 		return {
-			label: waiting
-				? `FG · ${running} · Q${questions} · P${permissions}`
+			label: waiting || waitingTasks
+				? `FG · ${running} · W${waitingTasks} · Q${questions} · P${permissions}`
 				: running
 					? `FG · ${running}`
 					: finished
 						? `FG · ✓${finished}`
 						: "Foreground",
-			title: `Foreground tasks · ${running} running/starting · ${questions} questions · ${permissions} permissions · ${finished} finished`,
+			title: `Foreground tasks · ${running} running/starting · ${waitingTasks} waiting · ${questions} questions · ${permissions} permissions · ${finished} finished`,
 		};
 	};
 	const refresh = async (entry: {
@@ -749,7 +750,7 @@ export function ForegroundTasksSection({
 						detail={[task.status.replace(/[_-]/g, " ").replace(/^./, value => value.toUpperCase()), task.model, task.pendingInteractions ? `${task.pendingInteractions} awaiting you` : undefined, !task.workerEpoch ? "worker no longer available" : undefined].filter(Boolean).join(" · ")}
 						detailTone={task.status === "failed" ? "danger" : undefined}
 						expanded={expanded} disabled={!task.workerEpoch || busy}
-						leading={isActiveWorkStatus(task.status)
+						leading={task.status !== "waiting" && isActiveWorkStatus(task.status)
 							? <WorkStatusRing attention={task.pendingInteractions > 0} foreground={theme.colors.foreground} platform={layout.platform} />
 							: <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: task.status === "failed" || task.status === "lost" ? theme.colors.statusDanger : task.status === "completed" ? theme.colors.statusSuccess : theme.colors.foregroundMuted }} />}
 						trailing={<Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />}

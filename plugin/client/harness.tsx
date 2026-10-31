@@ -4,6 +4,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { readJobs } from "./jobs-pages";
 import { readSubagents } from './subagent-pages';
 import { orderTaskTree, taskGroupKey, treeAttemptKey } from "../shared/subagent-tree";
+import { treeConnectors, type TreeAnchor } from "../shared/tree-connectors";
 import { groupSubagentAttempts, attemptIdentity } from "./subagent-attempts";
 import { Pressable, Text, View, type ScrollView as NativeScrollView } from "react-native";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -392,6 +393,7 @@ function useWorkSummary({ agentId, workspaceId, host }: JobScope) {
 			available: rows !== undefined,
 			total: rows?.length ?? 0,
 			active: active.length,
+			waitingCount: active.filter((row) => row.status === "waiting").length,
 			runningCount: active.filter((row) => ["starting", "launching", "pending", "running"].includes(row.status)).length,
 			running: active.some((row) => ["starting", "launching", "pending", "running"].includes(row.status)),
 			attention: active.some(
@@ -436,7 +438,8 @@ function MountedWorkIndicator(
 	const runningJobs = summary.jobs.runningCount + summary.foreground.runningCount;
 	const agents = summary.agents.runningCount,
 		jobs = runningJobs || summary.jobs.active + summary.foreground.active;
-	const count = agents || jobs;
+	// Retain waiting tasks in Work without advertising idle-only work as spinning.
+	const count = agents || runningJobs || Math.max(0, jobs - summary.jobs.waitingCount - summary.foreground.waitingCount);
 	const attention = agents
 		? summary.agents.attention
 		: summary.jobs.attention || summary.foreground.attention;
@@ -746,6 +749,16 @@ function HarnessPanel({
 	const opening = useRef(false), mounted = useRef(true);
 	const [openingId, setOpeningId] = useState<string>();
 	const [openError, setOpenError] = useState<string>();
+	// Keep status centers in list coordinates: row heights change when titles wrap or reports expand.
+	const treeContainer = useRef<View>(null);
+	const treeRowRefs = useRef(new Map<string, View>());
+	const measureTreeRows = () => {
+		if (!treeContainer.current || kind !== "subagents") return;
+		for (const [key, node] of treeRowRefs.current) node.measureLayout(treeContainer.current, (x, y) => recordPoint(setTreeLayouts, key, { x, y }), () => {});
+	};
+	const [treeLayouts, setTreeLayouts] = useState<Record<string, TreeAnchor>>({});
+	const [statusAnchors, setStatusAnchors] = useState<Record<string, TreeAnchor>>({});
+	const recordPoint = (setter: typeof setTreeLayouts, key: string, point: TreeAnchor) => setter(previous => previous[key]?.x === point.x && previous[key]?.y === point.y ? previous : { ...previous, [key]: point });
 	useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 	const target = { agentId, workspaceId };
 	const identity = useQuery({
@@ -835,17 +848,19 @@ function HarnessPanel({
 		brief = false,
 		status?: string,
 		presentation?: { title: string; detail: string; expanded?: boolean; opensChat: boolean },
+		anchorKey?: string,
 	) => (
 		<NativeRow
 			colors={theme.colors}
+			onLeadingAnchor={anchorKey ? point => recordPoint(setStatusAnchors, anchorKey, point) : undefined}
 			title={presentation?.title ?? label}
 			accessibilityLabel={label}
 			detail={presentation?.detail ?? status}
 			detailTone={status === "lost" || status === "failed" ? "danger" : undefined}
 			expanded={presentation?.expanded}
-			leading={status ? (['starting', 'launching', 'pending', 'running'].includes(status)
+			leading={status ? <View style={kind === "subagents" ? { width: 14, height: 14, alignItems: "center", justifyContent: "center" } : undefined}>{(['starting', 'launching', 'pending', 'running'].includes(status)
 				? <View accessibilityLabel="Running"><WorkStatusRing attention={false} foreground={fg} platform={layout.platform} /></View>
-				: <View accessibilityLabel={kind === "jobs" ? status : status === "lost" ? "Lost" : status === "failed" ? "Failed" : "Idle"} style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: status === "lost" || status === "failed" ? danger : kind === "jobs" && status !== "completed" ? muted : theme.colors.statusSuccess }} />) : undefined}
+				: <View accessibilityLabel={kind === "jobs" ? status : status === "lost" ? "Lost" : status === "failed" ? "Failed" : "Idle"} style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: status === "lost" || status === "failed" ? danger : kind === "jobs" && status !== "completed" ? muted : theme.colors.statusSuccess }} />)}</View> : undefined}
 			trailing={<Icon name={presentation?.opensChat ? "ArrowUpRight" : presentation?.expanded ? "ChevronUp" : "ChevronDown"} size={14} color={muted} />}
 			disabled={disabled}
 			onPress={onPress}
@@ -894,7 +909,7 @@ function HarnessPanel({
 		item && "paseoAgentId" in item ? item.paseoAgentId : undefined;
 	const selectedDetail =
 		selectedId && ready ? (
-			<View style={{ gap: 8, padding: 10, paddingTop: 0 }}>
+			<View style={{ gap: 8, padding: 10, paddingTop: 0, ...(kind === "subagents" && viewMode !== "completed" && selectedAttempt && rows.some(row => "childId" in row && row.parentKey === treeAttemptKey(selectedAttempt)) ? { paddingLeft: 30 } : {}) }}>
 				{selectedWorker ? <>
 					{selectedWorker.title !== workerTitle(selectedWorker) ? <Metadata colors={theme.colors}>Task: {selectedWorker.title}</Metadata> : null}
 					<WorkerConversation key={JSON.stringify([session, epoch, selectedWorker.childId, selectedWorker.attempt, selectedWorker.runtimeId])}
@@ -937,8 +952,18 @@ function HarnessPanel({
 				{selectedWorker && (attemptGroups.get(taskGroupKey(selectedWorker))?.length ?? 0) > 1 ? <AttemptHistory key={JSON.stringify([session, epoch, attemptIdentity(selectedWorker)])} rows={attemptGroups.get(taskGroupKey(selectedWorker))!.slice(1)} target={conversationTarget} colors={theme.colors} platform={layout.platform} /> : null}
 			</View>
 		) : null;
+	const connectorRows = kind === "subagents" && viewMode !== "completed" ? rows.filter((row): row is WorkerRow => "childId" in row).map(row => ({ key: treeAttemptKey(row), parentKey: row.parentKey })) : [];
+	const connectorAnchors = new Map(connectorRows.flatMap(({ key }) => {
+		const layout = treeLayouts[key], anchor = statusAnchors[key];
+		const row = rows.find(row => "childId" in row && treeAttemptKey(row) === key);
+		const border = row && viewMode !== "completed" && !isActiveRow(row) && !(kind === "subagents" && viewMode === "active") ? 1 : 0;
+		return layout && anchor ? [[key, { x: layout.x + anchor.x + border, y: layout.y + anchor.y + border, radius: row && ['starting', 'launching', 'pending', 'running'].includes(row.status) ? 7 : 4 }] as const] : [];
+	}));
+	const connectors = treeConnectors(connectorRows, connectorAnchors);
 	const content = (
 		<View
+			ref={treeContainer}
+			onLayout={kind === "subagents" ? measureTreeRows : undefined}
 			style={{
 				paddingHorizontal:
 					embedded
@@ -1008,9 +1033,9 @@ function HarnessPanel({
 					{"fromSubagent" in row && row.fromSubagent === true && (index === 0 || !("fromSubagent" in ordered[index - 1] && ordered[index - 1].fromSubagent === true)) ? (
 						<Text accessibilityRole="header" style={{ color: fg, fontSize: 18 }}>From subagents</Text>
 					) : null}
-					<View accessibilityLabel={"childId" in row ? `Agent hierarchy level ${(depths.get(id) ?? 0) + 1}` : undefined}
+					<View ref={kind === "subagents" && "childId" in row ? node => { const key = treeAttemptKey(row); if (node) treeRowRefs.current.set(key, node); else treeRowRefs.current.delete(key); } : undefined} onLayout={kind === "subagents" && "childId" in row ? event => { const { x, y } = event.nativeEvent.layout; recordPoint(setTreeLayouts, treeAttemptKey(row), { x, y }); measureTreeRows(); } : undefined} accessibilityLabel={"childId" in row ? `Agent hierarchy level ${(depths.get(id) ?? 0) + 1}` : undefined}
 						style={{
-							...("childId" in row ? { marginLeft: Math.min(depths.get(id) ?? 0, 3) * 16 } : {}),
+							...("childId" in row ? { marginLeft: (depths.get(id) ?? 0) * 16 } : {}),
 							...(viewMode !== "completed" && !isActiveRow(row) && !(kind === "subagents" && viewMode === "active")
 								? {
 										borderWidth: 1,
@@ -1042,14 +1067,18 @@ function HarnessPanel({
 							},
 							!!openingId,
 							viewMode !== "completed",
-							kind === "jobs" || isActiveRow(row) || viewMode === "active" ? row.status : undefined,
+							row.status,
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
+							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
 						)}
 						{selectedId === id ? selectedDetail : null}
 					</View>
 					</Fragment>
 				);
 			})}
+			{connectors.length ? <View testID="work-tree-connectors" pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}>
+				{connectors.map((line, index) => <View key={index} style={{ position: "absolute", left: line.x, top: line.y, width: line.width, height: line.height, backgroundColor: theme.colors.border }} />)}
+			</View> : null}
 			{openingId ? <Text style={{ color: muted }}>Opening conversation…</Text> : null}
 			{openError ? <Text accessibilityRole="alert" style={{ color: danger }}>{openError}</Text> : null}
 		</View>

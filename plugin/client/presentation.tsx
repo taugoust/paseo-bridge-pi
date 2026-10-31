@@ -38,9 +38,11 @@ export function Metadata({ colors, children, style, selectable = false, alert = 
   return <Text selectable={selectable} accessibilityRole={alert ? "alert" : undefined} style={[{ ...secondaryText, color: colors.foregroundMuted }, style]}>{children}</Text>;
 }
 
-export function NativeRow({ colors, title, detail, detailTone, leading, trailing, children, onPress, disabled = false, selected = false, expanded, style, accessibilityLabel }: {
+export function NativeRow({ colors, title, detail, detailTone, leading, trailing, children, onPress, disabled = false, selected = false, expanded, style, accessibilityLabel, onLeadingAnchor }: {
   colors: PresentationColors; title: string; detail?: string; detailTone?: "danger"; leading?: ReactNode; trailing?: ReactNode; children?: ReactNode;
   onPress(): void; disabled?: boolean; selected?: boolean; expanded?: boolean; style?: ViewStyle; accessibilityLabel?: string;
+  /** Center of a caller-supplied 14px leading slot, relative to this row. Measured after title wrapping. */
+  onLeadingAnchor?: (anchor: { x: number; y: number }) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title}
@@ -49,7 +51,7 @@ export function NativeRow({ colors, title, detail, detailTone, leading, trailing
     onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)}
     style={({ pressed }) => [{ paddingHorizontal: 12, paddingVertical: 10, gap: 6, opacity: disabled && !selected ? 0.5 : 1,
       backgroundColor: selected || (!disabled && pressed) ? colors.surface2 : !disabled && hovered ? colors.surface1 : "transparent" }, style]}>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+    <View onLayout={onLeadingAnchor ? event => { const { x, y, height } = event.nativeEvent.layout; onLeadingAnchor({ x: x + 7, y: y + height / 2 }); } : undefined} style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
       {leading}<View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <Text style={{ ...nativeText, color: colors.foreground }}>{title}</Text>
         {detail ? <Metadata colors={colors} style={detailTone === "danger" ? { color: colors.statusDanger } : undefined}>{detail}</Metadata> : null}

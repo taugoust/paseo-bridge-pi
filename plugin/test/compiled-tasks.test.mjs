@@ -29,6 +29,7 @@ test('compiled Work replaces legacy task pills, lazily scopes foreground/backgro
   const useState = initial => { const local = owner, i = cursor++; if (!(i in local)) local[i] = typeof initial === 'function' ? initial() : initial; return [local[i], value => { local[i] = typeof value === 'function' ? value(local[i]) : value; }]; };
   const task = { taskId:'t1',childId:'c1',workerEpoch:'worker1',groupId:'g1',attempt:1,title:'Helper',model:'test/model',status:'waiting-permission',createdAt:'now',updatedAt:'now',pendingInteractions:1,canPrompt:true,canStop:true };
   const status = { available:true,sessionId:'session',runtimeEpoch:'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',tasks:[task] };
+  let backgroundJobs = [{jobId:'j1',name:'Build',status:'running',createdAt:new Date().toISOString()}];
   const load = name => {
     if (name === '@getpaseo/plugin') return { defineRpc: c => c, defineSettings: c => c };
     if (name === '@getpaseo/plugin/client') return { useSettings: () => ({ status: 'loading' }), useRpc: contract => async input => { contract.input.parse(input); calls.push({name:contract.name,input}); return contract.name === 'harness_jobs_list' ? { protocol:1,state:'available',sessionId:'session',items:[],lastUpdated:null,stale:false } : {}; } };
@@ -39,7 +40,7 @@ test('compiled Work replaces legacy task pills, lazily scopes foreground/backgro
     if (name === 'react') return { Fragment:'Fragment', createElement:(type, props, ...children)=>jsx(type,{...props,...(children.length?{children}:{})},props?.key), useState, useRef:initial=>useState(()=>({current:initial}))[0], useEffect:fn=>{ const cleanup=fn(); if(cleanup) effects.push(cleanup); }, useLayoutEffect(){}, useMemo:fn=>fn(), useCallback:fn=>fn };
     if (name === '@tanstack/react-query') return { useQuery: options => {
       queries.push(options); const key=options.queryKey[0];
-      const data=key==='harness-status'||key==='foreground-tasks'?status:key==='harness-list'?{state:'available',items:options.queryKey[1]==='jobs'?[{jobId:'j1',name:'Build',status:'running',createdAt:new Date().toISOString()}]:[{taskId:'t1',childId:'c1',title:'Helper',status:'running',attempt:1}]}:undefined;
+      const data=key==='harness-status'||key==='foreground-tasks'?status:key==='harness-list'?{state:'available',items:options.queryKey[1]==='jobs'?backgroundJobs:[{taskId:'t1',childId:'c1',title:'Helper',status:'running',attempt:1}]}:undefined;
       return {data,isPending:false,isError:false,isFetching:false,isStale:false,refetch:async()=>{}};
     }, useMutation:()=>({isPending:false,mutate(){throw Error('No mutation expected');}}) };
     return require(name);
@@ -62,6 +63,12 @@ test('compiled Work replaces legacy task pills, lazily scopes foreground/backgro
     const indicator = visit(jsx(control.button.icon,{...props,size:14,color:'#aaa'}));
     assert.ok(walk(indicator).some(n=>n.props.style?.backgroundColor==='#db932e'), 'waiting foreground permission produces the native attention ring');
     assert.equal(control.updates.at(-1).label,'1 job','foreground duplicate is excluded from worker counts');
+    const savedJobs = backgroundJobs;
+    backgroundJobs = []; task.status = 'waiting';
+    const idleIndicator = visit(jsx(control.button.icon,{...props,size:14,color:'#aaa'}));
+    assert.ok(walk(idleIndicator).some(n=>n.type === 'Icon' && n.props.name === 'Briefcase'), 'idle waiting-only work has no fake active spinner');
+    assert.equal(control.updates.at(-1).label, '1 job', 'waiting remains retained nonterminal work');
+    backgroundJobs = savedJobs; task.status = 'waiting-permission';
     assert.equal(control.button.behavior.kind,'action');
     control.button.behavior.onPress();
     assert.deepEqual(opened,[{id:'work',target:{workspaceId:'w',location:'workspace'}}]);

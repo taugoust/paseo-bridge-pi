@@ -167,7 +167,7 @@ function parseAccountControlsUsageSnapshot(value: unknown) {
 	// not part of the public account/usage contract parsed by this consumer.
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		return accountControlsSnapshotSchema.parse(value);
-	const { sessionRouting: _routing, ...snapshot } = value as Record<
+	const { sessionRouting: _routing, guardedDefaultSwitchVersion: _guardedSwitch, ...snapshot } = value as Record<
 		string,
 		unknown
 	>;

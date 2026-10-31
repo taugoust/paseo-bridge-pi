@@ -92,7 +92,13 @@ test('compiled foreground section persists interaction answers/drafts and locks 
   };
   const node = (tree, type, label) => walk(tree).find(item => item.type === type && item.props.accessibilityLabel === label);
   try {
+    task.status = 'waiting'; props.viewMode = 'active';
     let tree = render();
+    assert.match(text(tree), /Helper\s+Waiting/);
+    assert.equal(walk(tree).some(node => node.type === 'WorkStatusRing'), false, 'waiting stays idle without a fake running spinner');
+    props.viewMode = 'completed'; tree = render();
+    assert.doesNotMatch(text(tree), /Helper/, 'waiting is nonterminal, never completed/reap-eligible work');
+    delete props.viewMode; task.status = 'waiting-permission'; tree = render();
     assert.match(text(tree), /Helper\s+Waiting permission/);
     assert.equal(calls.length, 0, 'opening a pending permission never submits a decision');
     press(tree, 'Helper');

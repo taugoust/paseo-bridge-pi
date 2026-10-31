@@ -84,7 +84,7 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
         if (request.method === 'subagents.list') return { protocol: 1, state: 'available', sessionId: 'session', items: [{
           taskId: 'subagent-task-111111111111111111111111', childId: 'subagent-child-222222222222222222222222',
           groupId: 'subagent-job-333333333333333333333333', runtimeId: 'runtime-exact', attempt: 1,
-          status: 'running', title: 'child', lastUpdated: null, stale: false,
+          status: 'waiting', title: 'child', lastUpdated: null, stale: false,
         }], lastUpdated: null, stale: false };
         throw new Error('unexpected read-only method');
       },
@@ -203,6 +203,7 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
     writeHarnessReadOnlyDescriptor(join(root, '.pi', 'paseo-bridge'), readDescriptor);
     const tasks = await invoke('harness_subagents_list', readTarget);
     assert.equal(tasks.items[0].taskId, 'subagent-task-111111111111111111111111');
+    assert.equal(tasks.items[0].status, 'waiting', 'read-only server projection preserves waiting as a nonterminal task status');
     assert.equal(tasks.items[0].paseoAgentId, undefined, 'wrong attempt/runtime never obtains another child title route');
     await putRecord({ ...liveRecord, attempt: 1, runtimeId: 'runtime-exact' });
     const beforeTitleLookup = refreshedAgents.length;
@@ -215,6 +216,13 @@ test('compiled plugin backend operates the real bridge without prompt dispatch o
     assert.equal(foreground.available, true, foreground.reason ?? '');
     assert.equal(foreground.tasks[0].workerEpoch, 'worker-epoch-1');
     assert.equal(foreground.tasks[0].model, 'harness-test/mock:off');
+    task.status = 'waiting';
+    assert.equal((await invoke('foreground_tasks_status', target)).tasks[0].status, 'waiting', 'strict foreground task response accepts waiting');
+    task.status = 'unknown';
+    const rejectedUnknown = await invoke('foreground_tasks_status', target);
+    assert.equal(rejectedUnknown.available, false, 'strict foreground task response rejects unknown statuses');
+    assert.match(rejectedUnknown.reason, /Invalid (?:enum value|option)|received/i);
+    task.status = 'waiting-permission';
     task.workerEpoch = '';
     const pendingTaskList = await invoke('foreground_tasks_status', target);
     assert.equal(pendingTaskList.available, true, 'a starting/lost task with no live worker epoch must not invalidate the whole list');

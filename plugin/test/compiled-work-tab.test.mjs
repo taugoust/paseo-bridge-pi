@@ -253,6 +253,17 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
       assert.ok(nodes(ancestor).some(n => n.props?.accessibilityLabel === 'Idle'), 'idle ancestor retains existing green idle indicator');
       assert.deepEqual(rows(tree).map(n => n.props.accessibilityLabel.split(' · ')[0]), ['Worker 0', 'Worker 6'], 'finished parent retained before active descendant');
       assert.deepEqual(nodes(tree).filter(n => /^Agent hierarchy level /.test(n.props?.accessibilityLabel ?? '')).map(n => [n.props.accessibilityLabel, n.props.style.marginLeft]), [['Agent hierarchy level 1', 0], ['Agent hierarchy level 2', 16]], 'narrow child retains common right edge without changing row padding');
+      const hierarchy = nodes(tree).filter(n => /^Agent hierarchy level /.test(n.props?.accessibilityLabel ?? ''));
+      hierarchy.forEach((node, index) => {
+        node.props.onLayout({ nativeEvent: { layout: { x: index * 16, y: index * 200, width: 300, height: 60 } } });
+        const inner = nodes(node).find(n => n.type === 'View' && n !== node && n.props.onLayout);
+        assert.ok(inner, 'real compiled NativeRow exposes its measured leading anchor');
+        inner.props.onLayout({ nativeEvent: { layout: { x: 12, y: 8, width: 276, height: 40 } } });
+      });
+      tree = render();
+      const overlay = nodes(tree).find(n => n.props?.pointerEvents === 'none' && n.props?.importantForAccessibility === 'no-hide-descendants');
+      assert.ok(overlay, 'compiled Agents render a noninteractive connector overlay');
+      assert.deepEqual(nodes(overlay).filter(n => n !== overlay).map(n => [n.props.style.left, n.props.style.top, n.props.style.width, n.props.style.height]), [[18.5, 32, 1, 196], [19, 227.5, 9, 1]], 'measured parent/child status centers drive real compiled connector Views');
       rows(tree)[1].props.onPress(); tree = render();
       const nestedQuery = queries.find(q => q.queryKey[0] === 'worker-conversation');
       assert.ok(nestedQuery.queryKey.includes('nested-session') && nestedQuery.queryKey.includes('nested-epoch') && nestedQuery.queryKey.includes('nested-owner'), 'nested trace bound to actual parent session and epoch');

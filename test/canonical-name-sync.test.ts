@@ -73,9 +73,9 @@ test("serialized stale asynchronous writes converge to latest observed external 
   f.local("First Pi Name");
   f.local("Second Pi Name");
   f.sync.observe("Human Latest Name");
-  assert.equal(f.get().displayName, "Human Latest Name");
+  assert.equal(f.get().displayName, "Second Pi Name"); // Rename waits behind the in-flight write.
   f.sync.observe("First Pi Name"); // Own delayed echo, not a human rename.
-  assert.equal(f.get().displayName, "Human Latest Name");
+  assert.equal(f.get().displayName, "Second Pi Name");
   f.releases.shift()!(); await tick();
   assert.equal(f.writes.at(-1)?.name, "Human Latest Name");
   assert.equal(f.writes.some(write => write.name === "Second Pi Name"), false);
@@ -136,4 +136,111 @@ test("reconnect snapshots adopt latest observed native name without duplicate ch
   next.sync.observe("Offline User Rename"); await next.sync.settled();
   assert.equal(next.get().displayName, "Offline User Rename");
   assert.deepEqual(next.writes, [{ name: "Offline User Rename", updateAgent: false }]);
+});
+
+function asyncFixture() {
+  let record = { displayName: "Initial Name", revision: 1 };
+  let current = true;
+  const calls: { name: string; revision: number; resolve(): void; reject(): void }[] = [];
+  const writes: string[] = [], warnings: string[] = [];
+  const sync = new CanonicalNameSync({
+    authority: { get: () => record, rename: (name, revision) => new Promise((resolve, reject) => {
+      calls.push({ name, revision, resolve() {
+        if (revision !== record.revision) { reject(new Error("revision mismatch")); return; }
+        record = { displayName: name, revision: revision + 1 }; resolve(record);
+      }, reject() { reject(new Error("rename unavailable")); } });
+    }) }, isCurrent: () => current,
+    write: async name => { writes.push(name); }, warn: message => warnings.push(message),
+  });
+  return { sync, calls, writes, warnings, get: () => record, stale() { current = false; },
+    local() { record = { displayName: "Local Edit", revision: record.revision + 1 }; } };
+}
+
+test("async rename is awaited and later observations serialize using fresh CAS revisions", async () => {
+  const f = asyncFixture();
+  f.sync.observe("First Name", { generation: "a", seq: 1 });
+  f.sync.observe("Newest Name", { generation: "a", seq: 3 });
+  f.sync.observe("Old Name", { generation: "a", seq: 2 });
+  assert.equal(f.calls.length, 1); assert.deepEqual(f.writes, []);
+  f.calls[0].resolve(); await tick();
+  assert.equal(f.calls.length, 2); assert.equal(f.calls[1].name, "Newest Name");
+  assert.equal(f.calls[1].revision, 2); assert.deepEqual(f.writes, []);
+  f.calls[1].resolve(); await f.sync.settled();
+  assert.deepEqual(f.writes, ["Newest Name"]); assert.equal(f.get().revision, 3);
+});
+
+test("a newer observation reverting to the old canonical name is not lost during await", async () => {
+  const f = asyncFixture(); f.sync.observe("First Name"); f.sync.observe("Initial Name");
+  f.calls[0].resolve(); await tick();
+  assert.equal(f.calls[1].name, "Initial Name");
+  f.calls[1].resolve(); await f.sync.settled(); assert.deepEqual(f.writes, ["Initial Name"]);
+});
+
+test("async rejection restores canonical title, consumes rejection, and permits subsequent rename", async () => {
+  const f = asyncFixture(); f.sync.observe("Rejected Name");
+  f.calls[0].reject(); await f.sync.settled();
+  assert.equal(f.warnings.length, 1); assert.deepEqual(f.writes, ["Initial Name"]);
+  f.sync.observe("Next Name"); f.calls[1].resolve(); await f.sync.settled();
+  assert.equal(f.get().displayName, "Next Name");
+});
+
+test("async authority CAS rejection preserves an intervening local edit", async () => {
+  const f = asyncFixture(); f.sync.observe("External Name"); f.local();
+  f.calls[0].resolve(); await f.sync.settled();
+  assert.equal(f.get().displayName, "Local Edit"); assert.deepEqual(f.writes, ["Local Edit"]);
+  assert.equal(f.warnings.length, 1);
+});
+
+for (const closed of [false, true]) test(`post-await ${closed ? "close" : "session"} guard suppresses writes and warnings`, async () => {
+  for (const reject of [false, true]) {
+    const f = asyncFixture(); f.sync.observe("External Name");
+    if (closed) f.sync.close(); else f.stale();
+    if (reject) f.calls[0].reject(); else f.calls[0].resolve();
+    await f.sync.settled(); assert.deepEqual(f.writes, []); assert.deepEqual(f.warnings, []);
+  }
+});
+
+test("retired generation completion/rejection never projects or warns over a new generation", async () => {
+  const f = asyncFixture(); f.sync.observe("Old Generation", { generation: "a", seq: 8 });
+  f.sync.observe("New Generation", { generation: "b", seq: 1 });
+  f.sync.observe("Retired Name", { generation: "a", seq: 9 });
+  f.calls[0].reject(); await tick();
+  assert.equal(f.calls[1].name, "New Generation"); assert.deepEqual(f.warnings, []);
+  f.calls[1].resolve(); await f.sync.settled(); assert.deepEqual(f.writes, ["New Generation"]);
+});
+
+test("a rename queued behind a rejected native write is not lost", async () => {
+  let record = { displayName: "Initial Name", revision: 1 };
+  let rejectWrite!: (error: Error) => void;
+  let attempts = 0;
+  const sync = new CanonicalNameSync({ authority: { get: () => record, async rename(name, revision) {
+    record = { displayName: name, revision: revision + 1 }; return record;
+  } }, isCurrent: () => true, write: async () => {
+    if (++attempts === 1) await new Promise<void>((_, reject) => { rejectWrite = reject; });
+  }, warn: () => {} });
+  sync.observe("Initial Name"); sync.observe("Queued Name");
+  rejectWrite(new Error("transport unavailable")); await sync.settled();
+  assert.equal(record.displayName, "Queued Name"); assert.equal(attempts, 2);
+});
+
+test("synchronous authority notifications do not reenter the rename drain", async () => {
+  let record = { displayName: "Initial Name", revision: 1 };
+  const writes: string[] = [];
+  let calls = 0;
+  let sync: CanonicalNameSync;
+  sync = new CanonicalNameSync({ authority: { get: () => record, rename(name, revision) {
+    calls++;
+    sync.changed(); // Real authority emits a local notification from rename.
+    record = { displayName: name, revision: revision + 1 };
+    return record;
+  } }, isCurrent: () => true, write: async name => { writes.push(name); }, warn: () => {} });
+  sync.observe("External Name"); await sync.settled();
+  assert.equal(calls, 1); assert.deepEqual(writes, ["External Name"]);
+});
+
+test("observation arriving in drain completion microtask is not stranded", async () => {
+  const f = fixture(); f.sync.observe("Parser Review");
+  queueMicrotask(() => f.sync.observe("Microtask Name"));
+  await f.sync.settled(); assert.equal(f.get().displayName, "Microtask Name");
+  assert.equal(f.writes.at(-1)?.name, "Microtask Name");
 });
