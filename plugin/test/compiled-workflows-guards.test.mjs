@@ -112,6 +112,11 @@ test("worktree removal rechecks open Paseo agents including symlinked subdirecto
 		state.worktrees = [{ ...legacyTree, recordedOwner }];
 		status = await handlers.status({ agentId: "agent", workspaceId: "workspace" }, context);
 		assert.deepEqual(status.snapshot.worktrees[0].recordedOwner, recordedOwner);
+		const worktreeGoal = { sessionId: "session", id: "goal-a", text: "Authoritative Goal" };
+		state.worktrees = [{ ...legacyTree, recordedOwner, goalScopeSessionId: "session", worktreeGoal }];
+		status = await handlers.status({ agentId: "agent", workspaceId: "workspace" }, context);
+		assert.equal(status.snapshot.worktrees[0].goalScopeSessionId, "session");
+		assert.deepEqual(status.snapshot.worktrees[0].worktreeGoal, worktreeGoal, "producer provenance survives strict server transport");
 		state.worktrees = [{ ...legacyTree, recordedOwner: { ...recordedOwner, canonicalDisplayName: undefined } }];
 		status = await handlers.status({ agentId: "agent", workspaceId: "workspace" }, context);
 		assert.equal(status.snapshot.worktrees[0].recordedOwner.canonicalDisplayName, undefined, "legacy names are not recovered from raw ownerTitle");
