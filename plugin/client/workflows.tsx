@@ -9,6 +9,7 @@ import {
 import { useRpc, type PluginAgentPanelProps } from "@getpaseo/plugin/client";
 import { Metadata, NativeButton } from "./presentation";
 import { WorktreeOwner } from "./worktree-owner";
+import { worktreeGroups, worktreeViews, type WorktreeView } from "../shared/worktree-groups";
 import { recordedAgentName } from "../shared/worktree-agent";
 import { WorktreeWorkspaceAction } from "./worktree-workspace-action";
 import { worktreeLinkKeyboardProps } from "../shared/worktree-link";
@@ -31,7 +32,7 @@ type Memory = {
 	uncertain: boolean;
 	error?: string;
 	sequence: number;
-	showAllWorktrees: boolean;
+	worktreeView: WorktreeView;
 	refreshed: number;
 	failedAt: number;
 };
@@ -94,7 +95,7 @@ function WorkflowsView({
 				pending: false,
 				uncertain: false,
 				sequence: 0,
-				showAllWorktrees: false,
+				worktreeView: "session",
 				refreshed: 0,
 				failedAt: 0,
 			};
@@ -133,7 +134,7 @@ function WorkflowsView({
 				) {
 					if (JSON.parse(saved.binding)[0] !== result.sessionId) {
 						saved.answers = {};
-						saved.showAllWorktrees = false;
+						saved.worktreeView = "session";
 					}
 					saved.binding = next;
 					saved.error = undefined;
@@ -169,10 +170,9 @@ function WorkflowsView({
 		goal = snapshot?.goal,
 		dialog = snapshot?.dialog,
 		colors = theme.colors,
-		showAllWorktrees = saved.showAllWorktrees === true,
-		visibleWorktrees = snapshot?.worktrees.filter(
-			(tree) => showAllWorktrees || tree.createdInSession === true,
-		) ?? [];
+		byGoal = saved.worktreeView === "goal",
+		groups = worktreeGroups(snapshot, saved.worktreeView),
+		visibleWorktrees = groups.flatMap(group => group.trees);
 	const delegatedGoals = snapshot?.delegatedGoals;
 	async function post(fields: Record<string, unknown>): Promise<false | { snapshot: WorkflowSnapshot }> {
 		if (
@@ -431,13 +431,13 @@ function WorkflowsView({
 							<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, paddingTop: 8, paddingBottom: 8 }}>
 							<Text style={{ paddingHorizontal: 8, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{visibleWorktrees.length} {visibleWorktrees.length === 1 ? "worktree" : "worktrees"}</Text>
 							{!snapshot.worktreeLoading ? (
-								<View accessibilityLabel="Worktree scope" style={{ flexDirection: "row", gap: 4, alignSelf: "flex-start", padding: 3, marginHorizontal: 4, borderRadius: 10, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border }}>
-									{[false, true].map((all) => (
-										<Pressable key={String(all)} accessibilityRole="button"
-											accessibilityState={{ selected: showAllWorktrees === all }}
-											onPress={() => { saved.showAllWorktrees = all; redraw(); }}
-											style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 12, borderRadius: 8, backgroundColor: showAllWorktrees === all ? colors.surface2 : "transparent" }}>
-											<Text style={{ color: colors.foreground }}>{all ? "All worktrees" : "This session"}</Text>
+								<View accessibilityLabel="Worktree scope" style={{ flexDirection: "row", maxWidth: "100%", gap: 2, alignSelf: "flex-start", padding: 3, marginHorizontal: 4, borderRadius: 10, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border }}>
+									{worktreeViews.map(({ value, label }) => (
+										<Pressable key={value} accessibilityRole="button"
+											accessibilityState={{ selected: saved.worktreeView === value }}
+											onPress={() => { saved.worktreeView = value; redraw(); }}
+											style={{ minHeight: 44, flexShrink: 1, justifyContent: "center", paddingHorizontal: 10, borderRadius: 8, backgroundColor: saved.worktreeView === value ? colors.surface2 : "transparent" }}>
+											<Text style={{ color: colors.foreground }}>{label}</Text>
 										</Pressable>
 									))}
 								</View>
@@ -452,12 +452,12 @@ function WorkflowsView({
 									{snapshot.worktreeContainer &&
 									!snapshot.worktreeRepositoryCount
 										? "No Git repositories found within two directory levels"
-										: showAllWorktrees
+										: saved.worktreeView === "all"
 											? "No additional worktrees"
 											: "No session-created worktrees"}
 								</Text>
 							) : null}
-							{visibleWorktrees.map((tree, index) => {
+							{visibleWorktrees.map((tree) => {
 								// Ownership and working-copy safety gates are intentionally unchanged.
 								const unsafe =
 										tree.stale ||
@@ -477,7 +477,8 @@ function WorkflowsView({
 									branch = tree.branch ?? (tree.detached ? "Detached HEAD" : "Branch unavailable"),
 									rowState = tree.setupError ? "Setup failed" : tree.stale ? "Stale metadata" : tree.locked ? "Locked" : tree.main ? "Main checkout" : tree.current ? "Current checkout" : tree.changedFiles == null ? "Status unavailable" : tree.changedFiles > 0 ? "Uncommitted changes" : "Working copy clean",
 									selected = selectedTree === tree.path,
-									workspaceUnavailable = locked || snapshot.busy || tree.stale || !(onOpenWorkspace || navigation?.openWorkspace);
+									workspaceUnavailable = locked || snapshot.busy || tree.stale || !(onOpenWorkspace || navigation?.openWorkspace),
+									group = groups.find(item => item.trees[0] === tree);
 								return (
 									<View
 										key={tree.path}
@@ -486,9 +487,7 @@ function WorkflowsView({
 											borderBottomColor: colors.border,
 										}}
 									>
-										{tree.repositoryPath &&
-										tree.repositoryPath !==
-											visibleWorktrees[index - 1]?.repositoryPath ? (
+										{group && (byGoal || tree.repositoryPath) ? (
 											<Text
 												accessibilityRole="header"
 												style={{
@@ -503,8 +502,8 @@ function WorkflowsView({
 													backgroundColor: colors.surface1,
 												}}
 											>
-												{tree.repositoryLabel ?? tree.repositoryPath}
-												<Text style={{ color: colors.foregroundMuted, fontWeight: "400" }}> · {visibleWorktrees.filter(item => item.repositoryPath === tree.repositoryPath).length}</Text>
+												{group.label}
+												<Text style={{ color: colors.foregroundMuted, fontWeight: "400" }}> · {group.trees.length}</Text>
 											</Text>
 										) : null}
 										<View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, paddingVertical: 4, paddingRight: 4, backgroundColor: selected ? colors.surface1 : "transparent" }}>
@@ -533,6 +532,7 @@ function WorkflowsView({
 											>
 												{selected ? "▾ " : "▸ "}{ownerName ?? branch}
 											</Text>
+											{byGoal ? <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 12 }}>{tree.repositoryPath ?? tree.repositoryLabel ?? "Repository unavailable"}</Text> : null}
 											<Text numberOfLines={1} style={{ color: tree.setupError || tree.stale || tree.locked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 12 }}>{ownerName ? `${branch} · ` : ""}{rowState}</Text>
 										</Pressable>
 										<WorktreeWorkspaceAction path={tree.path} diffStat={tree.diffStat} disabled={workspaceUnavailable}

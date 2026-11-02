@@ -58,6 +58,30 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     assert.equal(link(nodes), undefined, "absolute paths are tucked into details, not repeated in every collapsed row");
     assert.ok(nodes.some(n => n.props.style?.maxWidth === 740), "desktop list width is bounded");
     assert.equal(press(nodes, "This session").props.accessibilityState.selected, true);
+    assert.deepEqual(nodes.filter(n => n.type === "Pressable" && ["By Goal", "This session", "All worktrees"].includes(textOf(n))).map(textOf), ["By Goal", "This session", "All worktrees"]);
+    const original = snapshot;
+    const associated = (id, text) => ({ sessionId, id, text });
+    snapshot = { ...idle, worktrees: [
+      makeTree("/repo/unassigned", true),
+      makeTree("/repo/coordinator", true, "/repo", { worktreeGoal: associated("a", "Goal A") }),
+      makeTree("/second/descendant", false, "/second", { goalScopeSessionId: sessionId, worktreeGoal: associated("a", "Goal A") }),
+      makeTree("/repo/another", true, "/repo", { worktreeGoal: associated("b", "Goal B") }),
+      makeTree("/repo/foreign", false, "/repo", { goalScopeSessionId: "foreign", worktreeGoal: associated("a", "Goal A") }),
+      makeTree("/repo/legacy", undefined),
+    ] };
+    press(nodes, "By Goal").props.onPress(); nodes = await render();
+    assert.equal(press(nodes, "By Goal").props.accessibilityState.selected, true);
+    assert.equal(press(nodes, "This session").props.accessibilityState.selected, false);
+    assert.deepEqual(nodes.filter(n => n.props?.accessibilityRole === "header").map(textOf), ["Goal A · 2", "Goal B · 1", "Unassigned · 1"]);
+    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 4);
+    assert.ok(nodes.some(n => n.type === "Text" && textOf(n) === "/second"), "repository context is visible on Goal rows");
+    press(nodes, "This session").props.onPress(); nodes = await render();
+    assert.deepEqual(nodes.filter(n => n.props?.accessibilityRole === "header").map(textOf), ["/repo · 3"]);
+    press(nodes, "All worktrees").props.onPress(); nodes = await render();
+    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 6);
+    press(nodes, "By Goal").props.onPress(); snapshot.worktrees = []; nodes = await render();
+    assert.ok(nodes.some(n => textOf(n) === "No session-created worktrees"));
+    press(nodes, "This session").props.onPress(); snapshot = original;
     snapshot.worktreeError = "Permission denied [synthetic]";
     nodes = await render();
     assert.ok(nodes.some(n => textOf(n) === snapshot.worktreeError));
@@ -74,6 +98,8 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     assert.equal(row(nodes).props.accessibilityLabel, "▸ pi/branch");
     assert.ok(!nodes.some(n => textOf(n).includes("RAW TASK")));
     assert.equal(row(nodes).props.accessibilityState.expanded, false);
+    press(nodes, "By Goal").props.onPress(); nodes = await render();
+    assert.deepEqual(nodes.filter(n => n.props?.accessibilityRole === "header").map(textOf), ["Unassigned · 1"]);
     row(nodes).props.onPress(); nodes = await render();
     link(nodes).props.onPress(); await new Promise(r => setImmediate(r)); nodes = await render();
     assert.equal(row(nodes).props.accessibilityState.expanded, true, "path action does not toggle details");

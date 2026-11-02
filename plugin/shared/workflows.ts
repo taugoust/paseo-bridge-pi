@@ -111,6 +111,9 @@ export const workflowSnapshotSchema = z
 					.object({
 						path: z.string().max(4096),
 						createdInSession: z.boolean().optional(),
+						// Presentation provenance, not lifecycle/removal authority. Optional on older runtimes.
+						goalScopeSessionId: id.optional(),
+						worktreeGoal: z.object({ sessionId: id, id, text: z.string().min(1).max(4000) }).strict().optional(),
 						repositoryPath: z.string().max(4096).optional(),
 						repositoryLabel: z.string().max(4096).optional(),
 						branch: z.string().max(4096).nullable(),
