@@ -64,8 +64,15 @@ answer drafts; a changed entry requires explicit review before resubmission.
 
 Unassigned, Assigned (parent session), and Delegated (dedicated child) remain
 separate groups in the same ticket list/detail UI, including completed history.
-Assigned records are a read-only presentation of the existing snapshot, not a
-migration into the child registry. Missing history, questions, and historical
+Both sources use one `GoalPresentation` contract: `binding` identifies the owner,
+`sourceId` preserves the producer identity, and `reactKey` is a separate stable
+render identity. Current-session assignments remain a read-only presentation of
+the existing snapshot, not a migration into the child registry. They currently
+lack saved-goal timeline/question history and saved-goal planning/reference
+controls; these are unavailable, not inferred. Execution-owner-specific controls
+remain guarded: only saved goals offer child lifecycle/task/question actions;
+current-session limit writes retain activation and policy-revision checks.
+Missing history, questions, and historical
 usage remain unavailable rather than being invented. Launch models come from the
 authenticated child launcher and are labeled as launch metadata, never guessed from
 the parent/default model. Observation health and engine blocker/wake evidence remain

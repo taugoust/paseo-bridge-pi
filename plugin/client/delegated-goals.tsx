@@ -16,7 +16,15 @@ import type { delegatedGoalEntrySchema, workflowSnapshotSchema } from "../shared
 /** The parent owns records; only the linked child owns execution. */
 export type DelegatedGoal = z.infer<typeof delegatedGoalEntrySchema>;
 export type DelegatedGoalRegistry = NonNullable<z.infer<typeof workflowSnapshotSchema>["delegatedGoals"]>;
-type Ticket = (DelegatedGoal & { assigned?: false }) | AssignedTicket;
+type SavedGoalPresentation = DelegatedGoal & { binding: "unassigned" | "subagent"; assigned?: false; sourceId: string; reactKey: string };
+type CurrentSessionGoalPresentation = AssignedTicket;
+/** One presentation contract for both goal sources; binding alone governs owner-specific capabilities. */
+type GoalPresentation = SavedGoalPresentation | CurrentSessionGoalPresentation;
+type Ticket = GoalPresentation;
+const isCurrentSession = (goal: Ticket): goal is CurrentSessionGoalPresentation => goal.binding === "current-session";
+export function savedPresentation(goal: DelegatedGoal): SavedGoalPresentation {
+  return { ...goal, binding: goal.child ? "subagent" : "unassigned", sourceId: goal.id, reactKey: `catalog:${goal.id}` };
+}
 type Props = {
   assignedGoal?: z.infer<typeof workflowSnapshotSchema>["goal"];
   completedAssigned?: z.infer<typeof workflowSnapshotSchema>["completedGoals"];
@@ -111,7 +119,10 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
 
 export function DelegatedGoals({ registry, assignedGoal = null, completedAssigned = [], colors, identity, locked, busy, executionAvailable, limitsEditable = false, planningAvailable = false, model, limits, post, renderAgent, renderReview, renderQuestionAttachments }: Props) {
   const { t, time } = useGoalText();
-  const allEntries: Ticket[] = [...registry.entries, ...assignedTickets(assignedGoal, completedAssigned)];
+  const allEntries: Ticket[] = [
+    ...registry.entries.map(savedPresentation),
+    ...assignedTickets(assignedGoal, completedAssigned),
+  ];
   const [width, setWidth] = useState(0);
   const [selected, setSelected] = useViewState<string | null>(identity, "selected", allEntries.length ? null : "new");
   const [history, setHistory] = useViewState<boolean>(identity, "history", false);
@@ -129,9 +140,9 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   // Assignment is independent of execution status. Only an authoritative child
   // link makes an entry delegated; paused children must stay in that list.
   const groups = [
-    { title: "Unassigned", entries: entries.filter(entry => !entry.assigned && !entry.child) },
-    { title: "Assigned", entries: entries.filter(entry => entry.assigned) },
-    { title: "Delegated", entries: entries.filter(entry => !entry.assigned && !!entry.child) },
+    { title: "Unassigned", entries: entries.filter(entry => !isCurrentSession(entry) && !entry.child) },
+    { title: "Assigned", entries: entries.filter(isCurrentSession) },
+    { title: "Delegated", entries: entries.filter(entry => !isCurrentSession(entry) && !!entry.child) },
   ];
   const selection = selected === null && wide && !selectionReview ? entries[0]?.id ?? (history ? null : "new") : selected;
   const goal = allEntries.find(entry => entry.id === selection);
@@ -151,7 +162,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
     setSelected(id); setSelectionReview(false); setEditing(false); setEditingLimits(false); setClearConfirm(false); setAddingTask(false); setTaskText("");
   }
   async function action(name: string, fields: Record<string, unknown> = {}) {
-    if (goal?.assigned || disabled || ((name === "start" || name === "resume") && (!executionAvailable || budgetExhausted))) return false;
+    if ((goal && isCurrentSession(goal)) || disabled || ((name === "start" || name === "resume") && (!executionAvailable || budgetExhausted))) return false;
     if (name === "answer" && (!goal?.child || goal.status !== "active")) return false;
     if (name === "add_task" && (!goal || taskCapacity || !taskDraft || duplicateTask || goal.status === "active" || terminal(goal))) return false;
     if (goal) setSelected(goal.id);
@@ -171,7 +182,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
         <View style={{ gap: 4 }}>
           {groups.map((group, index) => group.entries.length ? <View key={index} style={{ gap: 4 }}>
             {group.title ? <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14, paddingTop: 12 }}>{t(group.title)}</Text> : null}
-            {group.entries.map(entry => <GoalTicketRow key={entry.id} colors={colors} title={entry.text} goal={entry}
+            {group.entries.map(entry => <GoalTicketRow key={entry.reactKey} colors={colors} title={entry.text} goal={entry}
               selected={selection === entry.id} onPress={() => select(entry.id)} />)}
           </View> : null)}
           {!entries.length ? <View style={{ paddingVertical: 24, gap: 8 }}>
@@ -240,9 +251,9 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
               <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600", flex: 1 }}>{t("Limits")}</Text>
               {!terminal(goal) ? button("Edit limits", () => { setSelected(goal.id); setEditingLimits(true); }, disabled || editingLimits || !limitsEditable || goal.policyRevision === undefined || (goal.assigned && !goal.activationId)) : null}
             </View>
-            <Metadata colors={colors}>{t("Automatic responses")}: {goal.automaticTurns ?? t("Unavailable")} / {goal.assigned && goal.automaticTurns === undefined ? t("Unavailable") : (goal.assigned ? goal.effectiveLimits?.automaticTurns : goal.continuationLimits?.automaticTurns) ?? limits.automaticTurns ?? t("Unlimited")}</Metadata>
+            <Metadata colors={colors}>{t("Automatic responses")}: {goal.automaticTurns ?? t("Unavailable")} / {isCurrentSession(goal) && goal.automaticTurns === undefined ? t("Unavailable") : (goal.assigned ? goal.effectiveLimits?.automaticTurns : goal.continuationLimits?.automaticTurns) ?? limits.automaticTurns ?? t("Unlimited")}</Metadata>
             <Metadata colors={colors}>{t("Tokens")}: {goal.tokensUsed?.toLocaleString() ?? t("Unavailable")} / {goal.tokenBudget === undefined ? t("Unavailable") : goal.tokenBudget?.toLocaleString() ?? t("Unlimited")}</Metadata>
-            <Metadata colors={colors}>{t("No-progress responses")}: {goal.noProgressTurns ?? t("Unavailable")} / {goal.assigned && goal.noProgressTurns === undefined ? t("Unavailable") : (goal.assigned ? goal.effectiveLimits?.noProgressTurns : goal.continuationLimits?.noProgressTurns) ?? limits.noProgressTurns ?? t("Unlimited")}</Metadata>
+            <Metadata colors={colors}>{t("No-progress responses")}: {goal.noProgressTurns ?? t("Unavailable")} / {isCurrentSession(goal) && goal.noProgressTurns === undefined ? t("Unavailable") : (goal.assigned ? goal.effectiveLimits?.noProgressTurns : goal.continuationLimits?.noProgressTurns) ?? limits.noProgressTurns ?? t("Unlimited")}</Metadata>
             {!goal.assigned && goal.child?.model ? <Metadata colors={colors}>{t("Launch model")}: {goal.child.model}</Metadata> : null}
           </View>
           {editingLimits && !terminal(goal) ? <GoalForm key={`${identity}/limits/${goal.id}`} draftKey={`${identity}/limits/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits} limitsOnly

@@ -13,7 +13,7 @@ const {compilePlugin}=await import(pathToFileURL(resolve(compilerPath)));
 const fixture=await mkdtemp(resolve(tmpdir(),'delegated-goals-ui-'));
 after(()=>rm(fixture,{recursive:true,force:true}));
 for(const directory of ['client','shared']) await cp(fileURLToPath(new URL(`../${directory}`,import.meta.url)),resolve(fixture,directory),{recursive:true});
-await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals } from "./client/delegated-goals"; export { goalAgentRoute } from "./shared/goal-agent"; export { GoalReview } from "./client/goal-review"; export { GoalQuestionAttachments } from "./client/goal-question-attachments";');
+await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals, savedPresentation } from "./client/delegated-goals"; export { assignedTickets } from "./client/assigned-goals"; export { goalAgentRoute } from "./shared/goal-agent"; export { GoalReview } from "./client/goal-review"; export { GoalQuestionAttachments } from "./client/goal-question-attachments";');
 await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema }; }');
 const {clientBundle,serverBundle}=await compilePlugin({client:resolve(fixture,'index.client.tsx'),server:resolve(fixture,'index.server.ts')});
 const schemas=(0,eval)(serverBundle)(name=>name==='@getpaseo/plugin'?{defineRpc:value=>value}:require(name)).default();
@@ -36,7 +36,7 @@ function harness(options={}) {
   if(name==='@getpaseo/plugin/client/ui')return {Icon:'Icon',SettingsSection:'SettingsSection',SettingsCard:'SettingsCard',SettingsAction:'SettingsAction',Modal:Object.assign(props=>jsx('Modal',props),{Content:'ModalContent'})};
   return require(name);
  };
- const {DelegatedGoals,goalAgentRoute,GoalReview,GoalQuestionAttachments}=(0,eval)(clientBundle)(load);
+ const {DelegatedGoals,savedPresentation,assignedTickets,goalAgentRoute,GoalReview,GoalQuestionAttachments}=(0,eval)(clientBundle)(load);
  function walk(node,path='root') {
   if(Array.isArray(node))return node.flatMap((item,index)=>walk(item,`${path}/${index}`));
   if(!node||typeof node!=='object')return [];
@@ -45,7 +45,7 @@ function harness(options={}) {
   }
   return [node,...walk(node.props.children,`${path}/children`)];
  }
- return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),drawAttachments:props=>walk({type:GoalQuestionAttachments,props}),remount:()=>states.clear(),setLocale:next=>{locale=next;},goalAgentRoute};
+ return {draw:props=>walk({type:DelegatedGoals,props}),drawReview:props=>walk({type:GoalReview,props}),drawAttachments:props=>walk({type:GoalQuestionAttachments,props}),remount:()=>states.clear(),setLocale:next=>{locale=next;},goalAgentRoute,savedPresentation,assignedTickets};
 }
 const entry=(id,status='paused')=>({id,revision:2,text:`Goal ${id}`,status,tasks:[],child:null,tokenBudget:null,tokensUsed:0,automaticTurns:0,noProgressTurns:0,summary:null,waiting:null});
 const button=(nodes,label)=>nodes.find(node=>node.type==='Pressable'&&node.props.accessibilityLabel===label);
@@ -277,6 +277,10 @@ test('all three assignment groups share ticket UI; assigned goals and history st
  const props={registry:{version:1,revision:1,entries:[entry('draft'),child]},assignedGoal:{...entry('parent'),tasks:[{text:'Recorded task',status:'completed'}]},completedAssigned:[{id:'old',text:'Old assigned goal',status:'completed',summary:'Recorded summary',tasks:[]}],colors,identity:'all-assignment-groups',locked:false,busy:false,executionAvailable:true,model:null,limits:{automaticTurns:null,noProgressTurns:null},post:async f=>{calls.push(f);return false;}};
  let nodes=h.draw(props);
  for(const label of ['Unassigned','Assigned','Delegated'])assert.ok(nodes.some(n=>n.props.children===label));
+ const current=h.assignedTickets(props.assignedGoal)[0],draft=h.savedPresentation(props.registry.entries[0]),running=h.savedPresentation(child);
+ assert.equal(current.sourceId,'parent');assert.equal(current.reactKey,'current-session:parent');assert.equal(current.binding,'current-session');
+ assert.equal(draft.sourceId,'draft');assert.equal(draft.reactKey,'catalog:draft');assert.equal(draft.binding,'unassigned');assert.equal(running.binding,'subagent');
+ assert.notEqual(h.savedPresentation(entry('parent')).reactKey,current.reactKey,'Source identity must not collide with a React selection key');
  button(nodes,'Goal parent').props.onPress();nodes=h.draw(props);
  for(const label of ['Start','Resume','Edit','Pause','Clear','Add task'])assert.equal(button(nodes,label),undefined);
  for(const label of ['Write-up','Timeline','Activity','Questions'])assert.ok(nodes.some(n=>n.props.accessibilityRole==='tab'&&n.props.accessibilityLabel===label));
