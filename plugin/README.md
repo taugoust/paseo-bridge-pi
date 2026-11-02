@@ -61,6 +61,12 @@ The companion Pi service publishes a noncredential native-registration hash, bou
 
 Plan percentages/reset windows, app reset windows and a separately labeled app allowance cap are shown. App percentages are intentionally hidden, and Codex-specific limits are not substituted for native app limits. The source is labeled experimental; it uses undocumented endpoints. The adapted candidate mapping retains MIT provenance in `server/PI-USAGE-LICENSE`. Compatible legacy named grants retain their guarded quota path. API keys, pending/mismatched bindings, disabled companion usage and invalid registration responses fail closed. Reload Pi once after installing the new registration-proof service; this enables companion routing, not direct-token quota access.
 
+### Managed authentication files
+
+The context quota reader supports direct private files and managed `auth.json` / `pi-accounts.json` link chains, including Home Manager links through `/nix/store` to the user's private credential file. User-owned links and root-owned immutable store links are supported; root-owned system directory links are allowed for platform paths. The agent directory itself must remain a real user-owned directory. Traversed directories must be root/user owned and not group/world writable (root-owned sticky temporary directories are permitted). Credential targets must be regular, user-owned, private files; readable root-owned Nix-store targets are allowed **only for usage settings**, never credentials.
+
+Resolution is bounded to 32 links, with a final no-follow/nonblocking open and a bounded 1 MiB read. Link/directory identities and link targets are rechecked before and after reading; the opened file's identity, permissions, size and modification metadata must remain stable. A changed/replaced chain fails closed. These are trusted-local defenses, not protection against hostile same-UID code: Node lacks a directory-fd `openat` walk. Account/provider selection, descriptor epoch, native registration and account-key checks still run before/after access and quota requests. A local-file rejection, unavailable account service and changed selection get distinct sanitized explanations. There is no alternate-login fallback, refresh or account-switch operation.
+
 ## Native context/usage
 
 Activity is no longer registered as a pill or panel. Completed-prompt history has no replacement in normal UI. Task progress stays in the native checklist and Work → Goals, not in another diagnostics dashboard. Existing observability data and terminal commands remain available.

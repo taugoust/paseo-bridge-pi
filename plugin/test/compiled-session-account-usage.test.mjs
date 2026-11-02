@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,8 +19,19 @@ for (const directory of ['server', 'shared']) await cp(join(pluginRoot, director
 await writeFile(join(root, 'index.server.ts'), `export { registerSessionAccountUsage } from "./server/session-account-usage";`);
 const { compilePlugin } = await import(pathToFileURL(resolve(compiler)));
 const { serverBundle } = await compilePlugin({ server: join(root, 'index.server.ts') });
-let activeHome;
-const { registerSessionAccountUsage } = (0, eval)(serverBundle)(name => name === 'node:os' ? { ...require(name), homedir: () => activeHome } : require(name));
+let activeHome, fsHooks;
+const nativeFs = require('node:fs/promises');
+const guardedFs = { ...nativeFs,
+  lstat: async (...args) => { const stat = await nativeFs.lstat(...args); return fsHooks?.lstat?.(args[0], stat) ?? stat; },
+  open: async (...args) => {
+    const handle = await nativeFs.open(...args);
+    try { await fsHooks?.afterOpen?.(args[0]); } catch (error) { await handle.close(); throw error; }
+    const read = handle.read.bind(handle);
+    handle.read = async (...params) => { const result = await read(...params); await fsHooks?.afterRead?.(args[0]); return result; };
+    return handle;
+  },
+};
+const { registerSessionAccountUsage } = (0, eval)(serverBundle)(name => name === 'node:os' ? { ...require(name), homedir: () => activeHome } : name === 'node:fs/promises' ? guardedFs : require(name));
 const hash = value => createHash('sha256').update(value).digest('hex');
 const jwt = claims => `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
 const identity = (provider, accountId, subject) => hash(JSON.stringify([provider, accountId, subject]));
@@ -90,7 +101,7 @@ async function fixture({ provider = 'openai-codex', defaultSelected = false, acc
   const scope = model => ({ kind: 'session', provider: 'pi', model, env: { PASEO_AGENT_ID: 'agent', PI_CODING_AGENT_DIR: dir, HOME: rootDir } });
   const discover = async model => { snapshotIndex = 0; return (await registered.source.discover(scope(model)))[0]; };
   const fetchUsage = input => registered.source.fetch(input);
-  return { rootDir, server, oldFetch, calls, codexAccess: codexCred.access, companionAccess: auth['openai-codex'].access, discover, fetchUsage, close: async () => { globalThis.fetch = oldFetch; server.close(); await rm(rootDir, { recursive: true, force: true }); } };
+  return { rootDir, dir, server, oldFetch, calls, codexAccess: codexCred.access, companionAccess: auth['openai-codex'].access, discover, fetchUsage, close: async () => { fsHooks = undefined; globalThis.fetch = oldFetch; server.close(); await rm(rootDir, { recursive: true, force: true }); } };
 }
 
 test('standalone named and default Codex fetch use Codex grant with no OpenAI companion traffic', async t => {
@@ -169,6 +180,76 @@ test('OpenAI rejects an explicitly mismatched provider even if native registrati
   const item = await f.discover('openai/gpt-test');
   assert.notEqual((await f.fetchUsage(item.input)).status,'available');
   assert.deepEqual(f.calls,[]);
+});
+
+async function managedFile(f, file) {
+  const target = join(f.rootDir, 'private-' + file);
+  await cp(join(f.dir, file), target); await chmod(target, 0o600); await rm(join(f.dir, file));
+  const middle = join(f.rootDir, 'managed-' + file); await symlink(target, middle);
+  await symlink('../managed-' + file, join(f.dir, file)); return target;
+}
+
+test('managed link chains support default/named Codex and OpenAI companion without crossing logins', async t => {
+  for (const includeOpenai of [false, true]) for (const defaultSelected of [false, true]) {
+    const f = await fixture({ includeOpenai, defaultSelected }); t.after(f.close);
+    for (const file of ['auth.json','pi-accounts.json', ...(includeOpenai ? ['pi-usage.json'] : [])]) await managedFile(f, file);
+    const item = await f.discover(includeOpenai ? 'openai/gpt-test' : 'openai-codex/gpt-test');
+    const report = await f.fetchUsage(item.input); assert.equal(report.status, 'available', JSON.stringify(report));
+    assert.ok(f.calls.length > 0); assert.ok(f.calls.every(call => call.authorization === `Bearer ${includeOpenai ? f.companionAccess : f.codexAccess}`));
+  }
+});
+
+test('unsafe or unreadable selected authentication never falls back and gives a sanitized local-file diagnosis', async t => {
+  for (const mutation of ['mode','parent-mode','directory','dangling','loop','malformed','oversized','foreign-file','foreign-link','root-link']) {
+    if(mutation === 'root-link' && process.getuid() === 0)continue; // Root-owned is user-owned when testing as root.
+    const f = await fixture({ defaultSelected: true }); t.after(f.close);
+    const path = join(f.dir,'auth.json');
+    if (mutation === 'mode') await chmod(path,0o644);
+    if (mutation === 'parent-mode') { const parent=join(f.rootDir,'unsafe');await mkdir(parent);await chmod(parent,0o777);await cp(path,join(parent,'credential'));await rm(path);await symlink(join(parent,'credential'),path); }
+    if (['directory','dangling','loop'].includes(mutation)) { await rm(path); if(mutation === 'directory')await mkdir(path); else await symlink(mutation === 'loop'?'auth.json':'missing',path); }
+    if (mutation === 'malformed') await writeFile(path,'sensitive-fixture-marker');
+    if (mutation === 'oversized') await writeFile(path,' '.repeat(1024*1024+1));
+    if (mutation === 'foreign-link' || mutation === 'root-link') await managedFile(f,'auth.json');
+    if (mutation === 'root-link') fsHooks = { lstat: (name,stat) => { if(name === path)stat.uid=0;return stat; } };
+    if (mutation.startsWith('foreign')) fsHooks = { lstat: (name,stat) => { if(name === path)stat.uid=process.getuid()+1; return stat; } };
+    const item = await f.discover('openai-codex/gpt-test'); const report = await f.fetchUsage(item.input);
+    assert.notEqual(report.status,'available'); assert.match(JSON.stringify(report),/authentication file/); assert.doesNotMatch(JSON.stringify(report),/sensitive-fixture-marker|session-usage-fixture-/); assert.deepEqual(f.calls,[]);
+  }
+});
+
+test('link and file replacement during open/read invalidates results before any quota request', async t => {
+  for (const stage of ['afterOpen','afterRead']) for (const replacement of ['link','file']) {
+    const f = await fixture({ defaultSelected: true }); t.after(f.close);
+    const target = await managedFile(f,'auth.json'); let changed=false;
+    fsHooks = { [stage]: async name => {
+      if(name !== target || changed)return; changed=true;
+      if(replacement === 'link') { await rm(join(f.dir,'auth.json')); await symlink(target,join(f.dir,'auth.json')); }
+      else { await rm(target); await writeFile(target,'{"synthetic":true}',{mode:0o600}); }
+    } };
+    const item = await f.discover('openai-codex/gpt-test'); const report = await f.fetchUsage(item.input);
+    assert.ok(changed); assert.notEqual(report.status,'available'); assert.match(JSON.stringify(report),/authentication file/); assert.deepEqual(f.calls,[]);
+  }
+});
+
+test('missing selected named credentials never substitute a valid default or another provider login', async t => {
+  for(const includeOpenai of [false,true]) {
+    const f=await fixture({includeOpenai});t.after(f.close);
+    await writeFile(join(f.dir,'pi-accounts.json'),JSON.stringify({version:1,providers:{}}));
+    const item=await f.discover(includeOpenai?'openai/gpt-test':'openai-codex/gpt-test');
+    assert.notEqual((await f.fetchUsage(item.input)).status,'available');assert.deepEqual(f.calls,[]);
+  }
+});
+
+test('a file rejected after discovery retains its local-file diagnosis and never uses fallback', async t => {
+  const f=await fixture({defaultSelected:true});t.after(f.close);const target=await managedFile(f,'auth.json');
+  const item=await f.discover('openai-codex/gpt-test');await chmod(target,0o644);
+  const report=await f.fetchUsage(item.input);assert.notEqual(report.status,'available');assert.match(JSON.stringify(report),/authentication file/);assert.deepEqual(f.calls,[]);
+});
+
+test('a selection changed while quota is in flight discards the result without fallback', async t => {
+  const f = await fixture({ snapshots:[{},{},{},{},{selectionRevision:4}] });t.after(f.close);
+  const item=await f.discover('openai-codex/gpt-test');const report=await f.fetchUsage(item.input);
+  assert.notEqual(report.status,'available');assert.match(JSON.stringify(report),/binding changed/);assert.equal(f.calls.length,1);
 });
 
 test('stale Codex selection revision/session changes invalidate usage after discovery', async t => {

@@ -1,10 +1,9 @@
 // Quota response mapping adapted from Paseo's codex-usage-source (Apache-2.0).
 // See ../client/PASEO-LICENSE. Session binding and transport guards are bridge-specific.
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, isAbsolute } from "node:path";
+import { join } from "node:path";
+import { AccountFileRejected, readPrivateAccountJson as readPrivateJson } from "./private-account-json";
 import { z } from "zod";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { quotaWindowDescriptors } from "@getpaseo/plugin/shared";
@@ -83,51 +82,6 @@ const text = (value: unknown): string | undefined =>
 		? value
 		: undefined;
 
-async function readPrivateJson(
-	dir: string,
-	file: "auth.json" | "pi-accounts.json" | "pi-usage.json",
-) {
-	if (!isAbsolute(dir)) throw new Error("Invalid account directory");
-	const directory = await lstat(dir);
-	// Readable directory names are harmless; other users must not be able to replace files.
-	if (
-		!directory.isDirectory() ||
-		directory.isSymbolicLink() ||
-		directory.mode & 0o022 ||
-		(process.getuid && directory.uid !== process.getuid())
-	)
-		throw new Error("Unsafe account directory");
-	const settings = file === "pi-usage.json";
-	const path = settings ? await realpath(join(dir, file)) : join(dir, file);
-	const nixSettings = settings && path.startsWith("/nix/store/");
-	const handle = await open(
-		path,
-		constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-	);
-	try {
-		const stat = await handle.stat();
-		const max = 1024 * 1024;
-		if (
-			!stat.isFile() ||
-			stat.mode & (settings ? 0o022 : 0o077) ||
-			stat.size > max ||
-			(process.getuid && stat.uid !== (nixSettings ? 0 : process.getuid()))
-		)
-			throw new Error("Unsafe account store");
-		const buffer = Buffer.alloc(max + 1);
-		let size = 0;
-		while (size < buffer.length) {
-			const read = await handle.read(buffer, size, buffer.length - size, size);
-			if (!read.bytesRead) break;
-			size += read.bytesRead;
-		}
-		if (size > max) throw new Error("Oversized account store");
-		return JSON.parse(buffer.subarray(0, size).toString("utf8"));
-	} finally {
-		await handle.close();
-	}
-}
-
 async function readCredential(
 	dir: string,
 	provider: "openai" | "openai-codex",
@@ -153,7 +107,10 @@ type UnavailableReason =
 	| "default-oauth"
 	| "api-key"
 	| "identity"
-	| "companion-disabled";
+	| "companion-disabled"
+	| "account-file"
+	| "account-service"
+	| "binding-changed";
 class UsageUnavailable extends Error {
 	readonly reason: UnavailableReason;
 	constructor(reason: UnavailableReason) {
@@ -177,13 +134,13 @@ function parseAccountControlsUsageSnapshot(value: unknown) {
 async function selection(agentId: string, provider: "openai" | "openai-codex" = "openai") {
 	const descriptor = await readAccountControlsDescriptor(agentId);
 	if (!validateAccountControlsDescriptor(descriptor, agentId))
-		throw new Error("Selection unavailable");
+		throw new UsageUnavailable("account-service");
 	const snapshot = parseAccountControlsUsageSnapshot(
 		await callAccountControls(descriptor, {
 			operation: "snapshot",
 			sessionId: descriptor.sessionId,
 			...(provider === "openai-codex" ? { providerId: provider } : {}),
-		}),
+		}).catch(() => { throw new UsageUnavailable("account-service"); }),
 	);
 	const current = await readAccountControlsDescriptor(agentId);
 	if (
@@ -192,7 +149,7 @@ async function selection(agentId: string, provider: "openai" | "openai-codex" = 
 		snapshot.sessionId !== descriptor.sessionId ||
 		snapshot.serviceEpoch !== descriptor.serviceEpoch
 	)
-		throw new Error("Selection changed");
+		throw new UsageUnavailable("binding-changed");
 	if (
 		(snapshot.providerId ?? "openai") !== provider ||
 		(provider === "openai-codex" &&
@@ -284,7 +241,7 @@ async function binding(agentId: string, dir: string) {
 		credential.expires !== again.expires ||
 		credential.accountId !== again.accountId
 	)
-		throw new Error("Binding changed");
+		throw new UsageUnavailable("binding-changed");
 	const claims = JSON.parse(
 		Buffer.from(credential.access.split(".")[1] ?? "", "base64url").toString(
 			"utf8",
@@ -403,7 +360,7 @@ async function companionBinding(
 		JSON.stringify(first) !== JSON.stringify(second) ||
 		(await readPrivateJson(dir, "pi-usage.json")).openaiUseCodexUsage !== true
 	)
-		throw new Error("Companion binding changed");
+		throw new UsageUnavailable("binding-changed");
 	return {
 		credential: first.credential,
 		accountId: first.accountId,
@@ -445,7 +402,7 @@ async function codexBinding(agentId: string, dir: string) {
 		credential.expires !== again.expires ||
 		credential.accountId !== again.accountId
 	)
-		throw new Error("Codex binding changed");
+		throw new UsageUnavailable("binding-changed");
 	const claims = JSON.parse(
 		Buffer.from(credential.access.split(".")[1] ?? "", "base64url").toString(
 			"utf8",
@@ -512,7 +469,13 @@ const missing = (reason?: UnavailableReason) =>
 						? "Subscription quota is unavailable for an API-key login. Use OpenAI's usage settings for billing usage."
 						: reason === "identity"
 							? "The current model's native OpenAI registration could not be verified. Custom authentication/origins or an unavailable grant cannot use companion quotas."
-							: "The current Pi account service or binding is unavailable. No other login's usage is substituted.",
+							: reason === "account-file"
+								? "The selected account's local authentication file was rejected or could not be read safely. No fallback login was used."
+								: reason === "account-service"
+									? "The current Pi account service is unavailable. No fallback login was used."
+									: reason === "binding-changed"
+										? "The selected account binding changed. Refresh usage for the current selection."
+										: "The selected Pi account binding could not be verified. No other login's usage is substituted.",
 	});
 
 /** Read-only, session-selected OAuth quota. Never refreshes or switches credentials. */
@@ -549,6 +512,7 @@ export function registerSessionAccountUsage(server: PluginServerContext) {
 					: await binding(agentId, dir);
 			} catch (error) {
 				if (error instanceof UsageUnavailable) reason = error.reason;
+				else if (error instanceof AccountFileRejected) reason = "account-file";
 			}
 			const fingerprint =
 				found?.fingerprint ?? `unavailable:${dir}:${reason ?? "binding"}`;
@@ -598,7 +562,7 @@ export function registerSessionAccountUsage(server: PluginServerContext) {
 						locators.get(locatorKey(input.agentId, locator.provider)) !== locator ||
 						current.fingerprint !== locator.fingerprint
 					)
-						throw new Error("Binding changed");
+						throw new UsageUnavailable("binding-changed");
 					return current;
 				};
 				const current = await check();
@@ -704,7 +668,9 @@ export function registerSessionAccountUsage(server: PluginServerContext) {
 								],
 				};
 			} catch (error) {
-				return error instanceof UsageUnavailable
+				return error instanceof AccountFileRejected
+					? missing("account-file")
+					: error instanceof UsageUnavailable
 					? missing(error.reason)
 					: {
 							status: "error",
