@@ -25,9 +25,10 @@ export async function readPrivateAccountJson(
 ): Promise<any> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		if (!isAbsolute(dir) || !process.getuid) fail();
+		if (!isAbsolute(dir) || !process.getuid || dir.split("/").some(part => part === "." || part === "..")) fail();
+		const directoryPath = dir.replace(/\/+$/, "") || "/";
 		const uid = process.getuid();
-		const directory = await lstat(dir);
+		const directory = await lstat(directoryPath);
 		if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== uid || (directory.mode & 0o022)) fail();
 		const snapshots = new Map<string, { stat: Stats; target?: string }>();
 		const remember = (path: string, stat: Stats, target?: string) => {
@@ -36,7 +37,8 @@ export async function readPrivateAccountJson(
 			snapshots.set(path, { stat, target });
 		};
 		let path = "/", links = 0;
-		let parts = join(dir, file).split("/").filter(Boolean);
+		let parts = join(directoryPath, file).split("/").filter(Boolean);
+		remember(directoryPath, directory);
 		remember("/", await lstat("/"));
 		while (parts.length) {
 			const part = parts.shift()!;
@@ -47,6 +49,7 @@ export async function readPrivateAccountJson(
 			if (stat.isSymbolicLink()) {
 				if (++links > 32 || (stat.uid !== uid && !(stat.uid === 0 && (inStore(next) || parts.length > 0)))) fail();
 				const target = await readlink(next);
+				if (!parts.length && target.endsWith("/")) fail();
 				remember(next, stat, target);
 				parts = [...target.split("/").filter(Boolean), ...parts];
 				if (isAbsolute(target)) path = "/";

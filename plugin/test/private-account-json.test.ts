@@ -45,4 +45,9 @@ test("rejects dangling and looping links and an agent-directory symlink", async 
  await symlink("missing", join(f.dir, "auth.json")); await assert.rejects(readPrivateAccountJson(f.dir, "auth.json"), AccountFileRejected);
  await rm(join(f.dir, "auth.json")); await symlink("auth.json", join(f.dir, "auth.json")); await assert.rejects(readPrivateAccountJson(f.dir, "auth.json"), AccountFileRejected);
  await symlink(f.dir, join(f.root, "alias")); await assert.rejects(readPrivateAccountJson(join(f.root, "alias"), "auth.json"), AccountFileRejected);
+ await assert.rejects(readPrivateAccountJson(join(f.root, "alias") + "/", "auth.json"), AccountFileRejected);
+ await assert.rejects(readPrivateAccountJson(f.dir + "/../agent", "auth.json"), AccountFileRejected);
+ await assert.rejects(readPrivateAccountJson(f.dir + "/./", "auth.json"), AccountFileRejected);
+ await rm(join(f.dir, "auth.json")); await symlink(f.target + "/", join(f.dir, "auth.json"));
+ await assert.rejects(readPrivateAccountJson(f.dir, "auth.json"), AccountFileRejected);
 });
