@@ -4,7 +4,7 @@ Work background history/live events and foreground activity use one bridge badge
 
 ## Bundled canonical code
 
-The companion daemon compiler explicitly bundles:
+The Paseo daemon plugin compiler explicitly bundles:
 
 - `@getpaseo/server/pi-tool-presentation`: narrow reexports of unchanged `parseToolArgs`, `parseToolResult`, `mapToolDetail`, and `nativeToolErrorText`;
 - public protocol `tool-call-display`, `generic-tool-presentation`, and `paseo-tool-presentation/index`;

@@ -4,7 +4,7 @@
 // How it works: this extension runs inside the TUI process, opens a named
 // pipe (Windows) / unix socket keyed on the session file path, and speaks
 // pi's RPC JSONL dialect on it - the same dialect `pi --mode rpc` speaks on
-// stdio. The companion shim (shim/pi-paseo-shim.js), configured as Paseo's
+// stdio. The bridge shim (shim/pi-paseo-shim.js), configured as Paseo's
 // pi provider command, connects Paseo's stdio to this pipe when the session
 // has a live TUI, and falls through to the real pi otherwise.
 //
@@ -1274,18 +1274,19 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
             || currentAgentId !== identity.agentId || currentSessionFile !== t.sessionFile || latestCtx?.sessionManager.getSessionId() !== identity.sessionId || t.operatorEpoch !== identity.runtimeEpoch)
             throw new Error("Account-controls identity changed during request");
         };
-        // An older producer can ignore extra fields. Never let a Codex mutation
-        // fall through to that producer's OpenAI-only management implementation.
-        if ((request?.operation === "switch" || request?.operation === "manage") && request.request?.providerId === "openai-codex") {
-          const snapshot = await service.getSnapshot({ sessionId: identity.sessionId, providerId: "openai-codex" });
-          assertCurrent();
-          if (snapshot?.providerId !== "openai-codex" || !snapshot.supportedProviders?.includes("openai-codex") || snapshot.sessionId !== identity.sessionId || snapshot.serviceEpoch !== identity.serviceEpoch)
-            throw new Error("Codex account controls require a provider-aware Pi account service. Reload Pi.");
-        }
+        // Only openai-codex has managed accounts; every request must name it.
+        const codex = "openai-codex";
         let result: unknown;
-        if (request?.operation === "snapshot" && request.sessionId === identity.sessionId && (request.providerId === undefined || request.providerId === "openai" || request.providerId === "openai-codex")) result = await service.getSnapshot({ sessionId: identity.sessionId, ...(request.providerId === undefined ? {} : { providerId: request.providerId }) });
-        else if (request?.operation === "switch" && request.request?.expectedSessionId === identity.sessionId && request.request?.expectedServiceEpoch === identity.serviceEpoch) result = await service.switchAccount(request.request);
-        else if (request?.operation === "manage" && request.request?.sessionId === identity.sessionId) result = await service.manageAccount(request.request);
+        if (request?.operation === "snapshot" && request.sessionId === identity.sessionId
+          && request.providerId === codex)
+          result = await service.getSnapshot({ sessionId: identity.sessionId, providerId: codex });
+        else if (request?.operation === "switch" && request.request?.providerId === codex
+          && request.request.expectedSessionId === identity.sessionId
+          && request.request.expectedServiceEpoch === identity.serviceEpoch)
+          result = await service.switchAccount(request.request);
+        else if (request?.operation === "manage" && request.request?.providerId === codex
+          && request.request.sessionId === identity.sessionId)
+          result = await service.manageAccount(request.request);
         else throw new Error("Invalid account-controls operation");
         assertCurrent();
         return result;

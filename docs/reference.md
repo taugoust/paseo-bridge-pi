@@ -117,7 +117,7 @@ built-in commands.
 ## Paseo controls for Pi sessions
 
 The optional [Paseo plugin](../plugin/README.md) adds a **Prompts · On/Off** control,
-read-only **Jobs** and **Pi subagents** panels, an **OpenAI Account & Usage** section, and an interactive **Foreground**
+read-only **Jobs** and **Pi subagents** panels, a **Codex** account and usage section, and an interactive **Foreground**
 composer popover for directly owned helper tasks. The temporary popover can stream
 conversation, send user messages, answer individual pending interactions, and stop
 a helper; closing it only hides the view. These controls use private bridge APIs

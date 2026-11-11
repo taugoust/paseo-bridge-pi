@@ -18,8 +18,8 @@ test("title requests use registry dispatch instead of bypassing selected-account
   assert.deepEqual(calls[0][2], { maxTokens: 1024 });
 });
 
-test("guarded title requests resolve captured physical provider and later requests follow switches", async t => {
-  let profile = { providerId: "openai", accountId: "Personal" };
+test("guarded title requests use the captured profile and later ones follow switches", async t => {
+  let profile = { providerId: "openai-codex", accountId: "Personal" };
   const references: any[] = [], calls: any[] = [];
   let finish: (value: any) => void = () => {};
   api(t, { protocol: 1, prepareRequest: async () => ({ ...profile }), physicalModelReference: (_ctx: any, captured: any) => { references.push(captured); return { provider: captured.providerId, id: "main" }; } });
@@ -33,11 +33,11 @@ test("guarded title requests resolve captured physical provider and later reques
   finish({ content: "first" });
   await pending;
   await completeWithSessionModel(ctx, {});
-  assert.deepEqual(calls.map(model => model.provider), ["openai", "openai-codex"]);
+  assert.deepEqual(calls.map(model => model.provider), ["openai-codex", "openai-codex"]);
   assert.deepEqual(references.map(value => value.accountId), ["Personal", "Work"]);
 });
 
-test("missing routing/model rejects rather than falling back to original OpenAI model", async t => {
+test("missing routing/model rejects rather than falling back to the original model", async t => {
   let calls = 0;
   api(t, { protocol: 1, prepareRequest: async () => { throw new Error("profile unavailable"); }, physicalModelReference: () => ({ provider: "openai-codex", id: "missing" }) });
   const ctx = { model: { provider: "openai", id: "old" }, modelRegistry: { find: () => undefined, streamSimple: () => { calls++; return { result: async () => ({}) }; } } };

@@ -34,7 +34,7 @@ test('retired workspace contribution never reads config, observes agents or regi
     const client = { paseo: { config: { get() { reads++; return config === null ? Promise.reject(Error('unavailable')) : Promise.resolve({ config }); } }, agents: { list: forbidden } }, addHeaderButton: forbidden, addComposerPill: forbidden };
     const stop = contributeAccountControls(client);
     await flush(); stop(); stop();
-    assert.equal(reads, 0, 'even missing, disabled or unavailable companion config is irrelevant');
+    assert.equal(reads, 0, 'even missing, disabled or unavailable paseo-accounts config is irrelevant');
   }
 });
 
@@ -42,7 +42,7 @@ test('actual composer contribution targets each exact chat, includes background 
   let observer, options;
   const registrations = [], requests = [], states = [];
   let hook = 0;
-  const snapshot = { protocol: 1, serviceEpoch: 'service', selectionRevision: 1, sessionId: 'child-session', accounts: [{ id: 'Work', label: 'Work', authKind: 'oauth' }], currentAccountId: null, defaultSelected: true, busy: false, canSwitch: true, inheritance: 'inherited', usage: { effectiveCredential: 'unknown', settingsUrl: null } };
+  const snapshot = { protocol: 1, serviceEpoch: 'service', selectionRevision: 1, sessionId: 'child-session', providerId: 'openai-codex', accounts: [{ id: 'Work', label: 'Work', authKind: 'oauth' }], currentAccountId: null, defaultSelected: true, busy: false, canSwitch: true, inheritance: 'inherited', usage: { effectiveCredential: 'unknown', settingsUrl: null } };
   let statusResult = { available: false, sessionId: null, runtimeEpoch: null, snapshot: null };
   const nodes = x => Array.isArray(x) ? x.flatMap(nodes) : !x || typeof x !== 'object' ? [] : [x, ...nodes(x.props?.children)];
   const text = x => Array.isArray(x) ? x.map(text).join('') : typeof x === 'string' ? x : x && typeof x === 'object' ? text(x.props?.children) : '';
@@ -96,6 +96,10 @@ test('actual composer contribution targets each exact chat, includes background 
     snapshot.inheritance = 'explicit'; all = draw(); press('Follow parent account'); all = draw(); press('Confirm switch'); await flush(); await flush();
     const clear = requests.filter(r => r.name === 'account_controls_switch').at(-1).input;
     assert.equal(clear.agentId, 'child'); assert.equal(clear.request.inherit, true); assert.equal(clear.request.accountId, null);
+    const named = r =>
+      r.name === 'account_controls_status' ? r.input.providerId : r.input.request.providerId;
+    assert.ok(requests.length > 1 && requests.every(r => named(r) === 'openai-codex'),
+      'every account request names openai-codex');
     observer.update({ type: 'agent_update', payload: { kind: 'upsert', agent: { ...child, workspaceId: 'new-workspace' } } });
     assert.equal(registrations[1].removed, true);
     assert.equal(registrations[2].input.workspaceId, 'new-workspace');
@@ -240,7 +244,7 @@ test('disposing before subscription bootstrap prevents late registration; a fres
   } finally { remount(); }
 });
 
-test('full plugin contribution leaves the account pill to the companion and leases Work/BTW controls', async () => {
+test('full plugin contribution leaves the account pill to paseo-accounts and leases Work/BTW controls', async () => {
   const load = name => {
     if (name === '@getpaseo/plugin') return { defineRpc: x => x, defineSettings: x => x };
     if (['react', 'react/jsx-runtime', 'react-native', '@getpaseo/plugin/client', '@getpaseo/plugin/client/ui', '@getpaseo/plugin/client/react-native', '@tanstack/react-query'].includes(name)) return {};
@@ -250,7 +254,7 @@ test('full plugin contribution leaves the account pill to the companion and leas
   const observers = [], pills = [], panels = [];
   let configCalls = 0;
   const client = {
-    paseo: { config: { get: () => { configCalls++; throw Error('bridge must not read companion configuration'); } },
+    paseo: { config: { get: () => { configCalls++; throw Error('bridge must not read paseo-accounts configuration'); } },
       agents: { list: async input => ({ subscription: { subscribe: observer => observers.push({ input, observer }) } }) } },
     rpc: async () => ({}), addScreen: () => () => {},
     addWorkspacePanel: input => { const panel = { ...input, removed: false }; panels.push(panel); return () => { panel.removed = true; }; },
@@ -264,7 +268,7 @@ test('full plugin contribution leaves the account pill to the companion and leas
     const agent = { id: 'main', provider: 'pi', workspaceId: 'workspace', availableModes: [{ id: 'full-access' }, { id: 'dangerous-ask' }] };
     for (const { observer } of observers) observer.snapshot({ entries: [{ agent }] });
     assert.deepEqual(pills.filter(p => ['work', 'pi-btw', 'pi-codex-account'].includes(p.id)).map(p => p.id).sort(), ['pi-btw', 'work']);
-    assert.equal(pills.some(p => p.id === 'pi-codex-account'), false, 'bridge must not compete with companion account control');
+    assert.equal(pills.some(p => p.id === 'pi-codex-account'), false, 'bridge must not compete with the paseo-accounts control');
     assert.equal(panels.filter(p => p.id === 'work').length, 1);
     a(); a(); assert.ok(pills.some(p => !p.removed));
     b(); assert.ok(pills.every(p => p.removed)); assert.ok(panels.every(p => p.removed));

@@ -67,7 +67,7 @@ Requires Pi 1.x and Node 22+. The plugin requires Paseo 0.11.4+; advanced contro
 | Packages, modules and the pure Nix constructor | [Nix API](nix/README.md) |
 | Commands, environment and reload behavior | [Reference](docs/reference.md) |
 | Permissions, private sockets and account controls | [Plugin guide](plugin/README.md) |
-| Companion tools and workflows | [pi-agent-extensions](https://github.com/taugoust/pi-agent-extensions) |
+| Pi tools and workflows | [pi-agent-extensions](https://github.com/taugoust/pi-agent-extensions) |
 
 > [!IMPORTANT]
 > A server update does not update built-in desktop/mobile UI. Supervised forks stay supervised; credentials and control capabilities remain private runtime state.

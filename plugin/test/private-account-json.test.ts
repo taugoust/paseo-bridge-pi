@@ -17,7 +17,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 
 test("private files and relative/absolute managed link chains retain private final-file checks", async t => {
  const f = await fixture(t);
- for (const file of ["auth.json", "pi-accounts.json", "pi-usage.json"] as const) {
+ for (const file of ["auth.json", "pi-accounts.json"] as const) {
   await writeFile(join(f.dir, file), '{"synthetic":true}', { mode: 0o600 });
   assert.deepEqual(await readPrivateAccountJson(f.dir, file), { synthetic: true });
   await rm(join(f.dir, file));
