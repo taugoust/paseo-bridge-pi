@@ -2,7 +2,7 @@
 
 ## Status
 
-Resolved in `9a67610`. Companion runtime: `pi-agent-extensions` commit `0fc2261`. No existing worker or DOS deployment was changed.
+Resolved in `9a67610`. Matching runtime: `pi-agent-extensions` commit `0fc2261`. No existing worker or DOS deployment was changed.
 
 ## Goal
 

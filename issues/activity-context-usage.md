@@ -12,36 +12,9 @@ Subsequent usage ordering and conditional Work sizing deployment succeeded at `/
 
 The user also asked about worktrees for multi-repository container directories. Recommendation: discover/group child repositories and session-owned repositories, not create a dummy parent Git repository. The initial UI refinements did not implement discovery. It was subsequently implemented and deployed at `/nix/store/gm79v1i3p57407xj10xarqznj3glcn39-nixos-system-matebook-26.05.20260916.4c78701`; see `pi-agent-extensions/issues/workspace-repositories.md`. It requires loading the updated Pi workflow service via full restart/resume; post-restart UI confirmation is still pending.
 
-## Current state: candidate companion path deployed
+## Current state: Codex-only usage
 
-After reviewing the candidate implementation, the user signed `openai-codex` into the expected account. Safe local metadata confirmed that the companion now matches `theofilos.augoustis@gmail.com`, not the older account. The user's native `openai` inference login was not changed.
-
-Implemented `plugin/server/companion-usage.ts`, adapted from candidate pi-usage at `012c08dc9c17f7ef4adaf92c6a5fe1d036653c7c`; MIT notice retained in `plugin/server/PI-USAGE-LICENSE`. It validates the complete bounded `/wham/usage/chatpass/apps` list, exactly one native client registration, all app windows and allowance before reading shared `/wham/usage` plan windows. Only the companion bearer/account header is sent. No native token, credential refresh, mutation, Codex-specific substitute quota, or redirect is used.
-
-Native usage cards show plan percentages/reset times, app reset windows and an explicit allowance cap. App percentages remain hidden as in the candidate. Source attribution says experimental companion. Registration matching is not independent same-user/workspace proof; the user performed the matching-account setup.
-
-Core account controls now publish optional `nativeRegistrationKey` and `nativeRegistrationVersion:1`. The hash uses native client registration and subject, not credential values. Default eligibility checks the live registry's stored OAuth source, official model/provider origin, supported configuration overrides, and the actual Pi agent directory. Named bindings must be actively applied. The bridge rechecks runtime/session/selection, both grants, and opt-in around requests. This is not cryptographic proof of final headers after arbitrary later extension hooks.
-
-`nix-config/hosts/matebook/taugoust.nix` explicitly enables `openaiUseCodexUsage:true` in home-managed `pi-usage.json` for this host after the user's setup. Other hosts remain off. The daemon permits this nonsecret Nix-store settings file while retaining private/no-follow rules for credential files. Disabling is checked at subsequent discovery/request guards. Expired grants fail closed; usage reads do not renew credentials.
-
-### Authorized live evidence
-
-The actual production companion function was called through a temporary local read-only adapter, keeping credentials out of tool arguments and output. It verified the expected companion, unchanged local grants and current default selection, and a unique native app registration. The provider returned:
-
-- Pro plan, weekly usage **72% used / 28% remaining**.
-- Reset **2026-10-27 06:37:27 UTC**.
-- Matching app weekly reset and **100% shared-plan allowance cap**.
-
-These are values at the diagnostic read, not hardcoded/current guarantees. The adapter was shut down/reaped and removed. No test suites ran. The full loaded Pi proof/UI path still requires the user reload below.
-
-### Latest deployment and remaining user action
-
-Production build/switch succeeded, job `job-c8e0756da08ceb5e8568e940`, output read and job reaped:
-`/nix/store/bl0miwx0p4y855if2qs48vi07277bcb1-nixos-system-matebook-26.05.20260916.4c78701`.
-
-Normal `doCheck` settings and installed smoke invocation are restored. Helpers and formatter were read/reaped. All review changes remain uncommitted/unpushed.
-
-**User confirmed the usage appeared after a full Pi process restart resuming the exact saved conversation.** `/remote-reload` had continued serving the old account snapshot without `nativeRegistrationVersion`, despite installed source containing it. The user chose manual restart rather than an automated restart. This confirms the deployed companion display now appears. The precise in-process reload/cache defect remains unresolved; do not claim it was fixed or that `/remote-reload` reliably refreshes Nix-switched extension code.
+Usage is reported only for Pi sessions on `openai-codex/` models, from the session's selected Codex login. The built-in `openai` provider is no longer managed: it has no named accounts, session selection or usage source here. The earlier experimental path that read `openai` usage through a separate Codex login, its opt-in settings file and its native-registration proof have been removed from the bridge and from Pi.
 
 ## Earlier investigation history
 
@@ -70,13 +43,13 @@ These were the initial source findings. The later authorized live diagnosis belo
 - `plugin/server/cache-usage.ts` registers native **Prompt cache** details: latest/session hit rate, cached/fresh input tokens, optional cache-write tokens. No fake quota windows or estimated dollar savings.
 - Cache locators bind agent, session and runtime epoch and use a five-second sample. Reads recheck the private descriptor and validate the snapshot. No provider request is made for cache metrics.
 - Cache accounts are `sessionOnly`, so the global account list is not filled with one card per conversation.
-- `plugin/server/session-account-usage.ts` registers native **OpenAI** quota for verified selected named OAuth accounts, including the owned idle-guard model family.
+- `plugin/server/session-account-usage.ts` registers native quota for the verified selected account. (Since superseded: it now covers only `openai-codex/` models.)
 - It verifies live account-controls state, privately reads a bounded no-follow account-store file, and requires its decoded account identity to match the runtime's `usage.accountKey`. Profile names are never confused with provider account IDs.
 - Private credential/runtime fingerprints select stable random locators. Public usage inputs contain only agent ID and random handle. Credentials/capabilities/fingerprints never appear in reports or inputs.
 - Identity and exact local grant are rechecked around the read-only quota request. Requests have a timeout, reject redirects, bound the response, and use the selected account header. No OAuth refresh or writes.
 - Window labels come from reported duration through native helpers; absent durations are not guessed. Additional/model-specific limits, code-review limits and credits are preserved. Mapping retains Paseo Apache-2.0 attribution.
 - Built-in/default login, API keys, pending/disconnected bindings and older runtimes without identity proof report unavailable, never another login's quota. This limitation is intentional; no verified default-credential interface exists yet.
-- `plugin/index.server.ts` registers both sources; `plugin/shared/account-controls.ts` accepts the optional proof. Minimum Paseo is 0.11.4 plus the companion downstream patch.
+- `plugin/index.server.ts` registers both sources; `plugin/shared/account-controls.ts` accepts the optional proof. Minimum Paseo is 0.11.4 plus the downstream session-usage patch.
 
 ### Pi core
 

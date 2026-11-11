@@ -13,7 +13,7 @@ Replace the three feature tabs with one centralized Activity dashboard. Also sho
 - Cache has an accessible hit-rate meter, compact estimates, and expandable detailed metrics/trends. Unknown accounting is displayed as unavailable, never a fabricated zero.
 - Responses have compact time/model/duration/cost rows, expandable token details, and optional tool timing. Session/runtime changes remount section state; unavailable queries hide old content.
 - Retain one Activity pill and one Refresh action. No extra model requests, mutations, or configuration changes.
-- The companion nix-config Paseo patch maps successful update_progress v5 results into native todo timeline items for live and persisted history. Blocked steps remain incomplete with an explicit label.
+- The matching nix-config Paseo patch maps successful update_progress v5 results into native todo timeline items for live and persisted history. Blocked steps remain incomplete with an explicit label.
 
 ## Validation
 Plugin suite: 26 passed, 1 optional real-worker test skipped, using the rebuilt Paseo 0.11.4 host compiler. Bridge suite: 133 passed, 9 optional skipped; bridge typecheck passed. Compiled dashboard tests cover native host component exports, all sections at once, meters and unknown state, expansion controls, shared refresh, per-feature errors, session isolation, and cleanup.

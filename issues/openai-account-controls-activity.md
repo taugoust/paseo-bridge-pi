@@ -1,6 +1,8 @@
 # Native OpenAI account controls and usage behavior
 
 ## Status
+Superseded: account controls and usage now cover only the `openai-codex` provider. The built-in `openai` provider has no managed accounts.
+
 Phase 2 implementation is deployed and tested. Accounts controls are native header controls, not part of Activity. Visibility of the Accounts header button on the user's device remains unresolved and is not device-verified. Native Usage behavior is unchanged.
 
 Implement OpenAI/ChatGPT account identity and official usage navigation through native account controls. Initial UI supports Pi's built-in login and existing named accounts only; users add named accounts through Pi `/accounts`. Never copy existing credentials into named storage or accept remote secret entry. Do not estimate quotas or modify `/fast`.
