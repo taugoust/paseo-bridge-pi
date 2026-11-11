@@ -28,6 +28,8 @@ export function removeAccountControlsDescriptor(baseDir, agentId, runtimeEpoch) 
     const descriptor = JSON.parse(fs.readFileSync(dest, "utf8")); if (descriptor.agentId === agentId && descriptor.runtimeEpoch === runtimeEpoch) fs.unlinkSync(dest);
   } catch {}
 }
+// Only openai-codex has managed accounts. Every request must name it explicitly.
+const PROVIDER_ID = "openai-codex";
 function exactKeys(value, keys) { return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join(",") === keys.slice().sort().join(","); }
 export function validateAccountControlsEnvelope(value, identity) {
   if (!exactKeys(value, ["v", "type", "id", "capability", "agentId", "sessionId", "runtimeEpoch", "serviceEpoch", "request"])) return false;
@@ -37,14 +39,21 @@ export function validateAccountControlsEnvelope(value, identity) {
   if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
   if (value.agentId !== identity.agentId || value.sessionId !== identity.sessionId || value.runtimeEpoch !== identity.runtimeEpoch || value.serviceEpoch !== identity.serviceEpoch) return false;
   const r = value.request;
-  if (r.operation === "snapshot") return (exactKeys(r, ["operation", "sessionId"]) || (exactKeys(r, ["operation", "sessionId", "providerId"]) && ["openai", "openai-codex"].includes(r.providerId))) && r.sessionId === identity.sessionId;
-  if (r.operation === "switch") return exactKeys(r, ["operation", "request"]) && r.request?.protocol === 1 && r.request.expectedSessionId === identity.sessionId && r.request.expectedServiceEpoch === identity.serviceEpoch
-    && (r.request.providerId === undefined || ["openai", "openai-codex"].includes(r.request.providerId));
+  if (r.operation === "snapshot") {
+    return exactKeys(r, ["operation", "sessionId", "providerId"])
+      && r.providerId === PROVIDER_ID && r.sessionId === identity.sessionId;
+  }
+  if (r.operation === "switch") {
+    return exactKeys(r, ["operation", "request"]) && r.request?.protocol === 1
+      && r.request.expectedSessionId === identity.sessionId
+      && r.request.expectedServiceEpoch === identity.serviceEpoch
+      && r.request.providerId === PROVIDER_ID;
+  }
   if (r.operation === "manage") {
     if (!exactKeys(r, ["operation", "request"])) return false;
     const m = r.request;
     if (!m || typeof m !== "object" || Array.isArray(m) || m.sessionId !== identity.sessionId
-      || (m.providerId !== undefined && !["openai", "openai-codex"].includes(m.providerId))) return false;
+      || m.providerId !== PROVIDER_ID) return false;
     const fields = {
       add: ["accountName", "method"], "cancel-login": ["accountName"],
       rename: ["accountId", "label"], remove: ["accountId"], default: ["accountId"],

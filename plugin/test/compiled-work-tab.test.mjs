@@ -696,7 +696,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     const expectedBackgroundPills = ['pi-btw', 'work'];
     const actualBackgroundPills = titledHost.pills.filter(pill => pill.agentId === nativeChild.id && !pill.removed && expectedBackgroundPills.includes(pill.id));
     assert.deepEqual(actualBackgroundPills.map(pill => pill.id).sort(), expectedBackgroundPills, 'current/new background Pi chats get exactly one bridge-owned Work and BTW control');
-    assert.ok(!titledHost.pills.some(pill => pill.id === 'pi-codex-account' && !pill.removed), 'account composer ownership stays with the companion');
+    assert.ok(!titledHost.pills.some(pill => pill.id === 'pi-codex-account' && !pill.removed), 'account composer ownership stays with paseo-accounts');
     assert.ok(actualBackgroundPills.every(pill => pill.workspaceId === nativeChild.workspaceId), 'composer controls target the exact background chat workspace');
     workAgents = [{ taskId: 'title-task', childId: 'title-child', groupId: 'title-group', attempt: 1, runtimeId: 'title-runtime', status: 'running', title: 'URGENT original instructions remain in expanded metadata', paseoAgentId: nativeChild.id, paseoWorkspaceId: nativeChild.workspaceId }];
     click(titledHost, 'a'); tree = render(titledHost); select(tree, 'Agents'); tree = render(titledHost);

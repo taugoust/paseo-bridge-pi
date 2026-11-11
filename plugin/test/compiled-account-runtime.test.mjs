@@ -15,16 +15,15 @@ const compiler=process.env.PASEO_PLUGIN_COMPILER;
 const source=process.env.PI_AGENT_EXTENSIONS_SOURCE;
 const enabled=process.env.PAE_ACCOUNTS_RUNTIME_TEST==='1';
 
-test('actual Pi account service switches via compiled Paseo private transport without model calls or context changes',{skip:!enabled,timeout:20000},async()=>{
+test('actual Pi Codex account service switches via compiled Paseo private transport '
+ +'without model calls or context changes',{skip:!enabled,timeout:20000},async()=>{
  assert.ok(compiler&&source,'explicit compiler and extension source are required');
+ const accountsModule=join(source,'openai-accounts/accounts.ts');
  const sdkDir=dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
  const {createJiti}=await import(pathToFileURL(join(sdkDir,'../node_modules/jiti/lib/jiti.mjs')));
  const jiti=createJiti(import.meta.url);
- const accounts=await jiti.import(join(source,'openai-accounts/accounts.ts'));
- const {registerGuard}=await jiti.import(join(source,'idle-context-warning/guard.ts'));
- const {registerCompaction}=await jiti.import(join(source,'idle-context-warning/compaction.ts'));
+ const accounts=await jiti.import(accountsModule);
  const {createAgentSession,AgentSessionRuntime,DefaultResourceLoader,ModelRuntime,SessionManager,SettingsManager}=await import('@earendil-works/pi-coding-agent');
- const {createAssistantMessageEventStream}=await import(pathToFileURL(join(sdkDir,'../node_modules/@earendil-works/pi-ai/dist/index.js')));
  const {compilePlugin}=await import(pathToFileURL(resolve(compiler)));
  const {serverBundle}=await compilePlugin({server:fileURLToPath(new URL('../index.server.ts',import.meta.url))});
  const root=await mkdtemp(join(tmpdir(),'account-live-runtime-'));
@@ -33,33 +32,33 @@ test('actual Pi account service switches via compiled Paseo private transport wi
  const sends=[];
  try {
   const store=new accounts.AccountStore(new accounts.InMemoryAccountStorageBackend());
-  await store.updateProvider('openai',state=>({...state,accounts:{alpha:{type:'api_key',key:'fixture-private-alpha'},beta:{type:'api_key',key:'fixture-private-beta'}}}));
   const encode=value=>Buffer.from(JSON.stringify(value)).toString('base64url');
   const codexToken=`${encode({alg:'none'})}.${encode({sub:'fixture-codex-subject','https://api.openai.com/auth':{chatgpt_account_id:'fixture-codex-account'}})}.fixture-signature`;
-  await store.updateProvider('openai-codex',state=>({...state,accounts:{alpha:{type:'oauth',access:codexToken,refresh:'fixture-codex-refresh',expires:Date.now()+86400000,accountId:'fixture-codex-account'}}}));
+  const codexAccount=access=>({type:'oauth',access,refresh:'fixture-codex-refresh',
+   expires:Date.now()+86400000,accountId:'fixture-codex-account'});
+  const codexAccounts={alpha:codexAccount(codexToken),beta:codexAccount(`${codexToken}-beta`)};
+  await store.updateProvider('openai-codex',state=>({...state,accounts:codexAccounts}));
   const runtime=await ModelRuntime.create({authPath:join(root,'auth.json'),modelsPath:null,modelsStorePath:join(root,'models'),allowModelNetwork:false,refreshOnCreate:false});
   const settings=SettingsManager.inMemory({compaction:{enabled:false},retry:{enabled:false}});
   const factory=pi=>{
-   pi.registerProvider('openai',{api:'openai-responses',apiKey:'fixture-default',baseUrl:'https://api.openai.com/v1',streamSimple(model,_context,options){
-    const stream=createAssistantMessageEventStream();queueMicrotask(async()=>{try{await options.onPayload?.({model:model.id},model);sends.push({model:model.id,key:options.apiKey});const message={role:'assistant',api:'openai-responses',provider:'openai',model:model.id,timestamp:Date.now(),stopReason:'stop',content:[{type:'text',text:'Synthetic guarded response'}],usage:{input:10,output:3,cacheRead:0,cacheWrite:0,totalTokens:13,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};stream.push({type:'done',reason:'stop',message});stream.end();}catch(error){stream.end({role:'assistant',api:'openai-responses',provider:'openai',model:model.id,timestamp:Date.now(),stopReason:'error',errorMessage:String(error),content:[],usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}});}});return stream;
-   }});
-   pi.registerProvider('openai-codex',{api:'openai-codex-responses',baseUrl:'https://chatgpt.com/backend-api'});
-   const cfg={idleMinutes:30,contextPercent:20,cheapCompactionModel:'openai/gpt-6-luna:low',guardedModels:{astra:'openai/gpt-6-astra'}};
-   const guard=registerGuard(pi,()=>cfg,{tombstonePath:join(root,'aliases.json')});registerCompaction(pi,()=>cfg,guard.compactionProof);
+   pi.registerProvider('openai-codex',{api:'openai-codex-responses',
+    baseUrl:'https://chatgpt.com/backend-api',
+    streamSimple(){sends.push('codex');throw Error('No model calls allowed');}});
    accounts.default(pi,{store});
   };
   const loader=new DefaultResourceLoader({cwd:root,agentDir:root,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,extensionFactories:[factory]});await loader.reload();
   const result=await createAgentSession({cwd:root,agentDir:root,modelRuntime:runtime,settingsManager:settings,resourceLoader:loader,sessionManager:SessionManager.create(root,join(root,'sessions')),noTools:'builtin'});session=result.session;
   owner=new AgentSessionRuntime(session,{cwd:root,agentDir:root,modelRuntime:runtime,settingsManager:settings,resourceLoader:loader,diagnostics:[]},async()=>{throw Error('Unexpected replacement');});
   const errors=[];await session.bindExtensions({onError:error=>errors.push(error)});
-  await session.setModel(runtime.getModel('openai','gpt-6-astra'));
-  await session.setModel(runtime.getModel('idle-guard','astra'));
   assert.deepEqual(errors,[]);
   const service=globalThis.__paeAccountControlsV1;assert.ok(service);
   const sessionId=session.sessionManager.getSessionId();
   transport=new BridgeTransport(join(root,'session.jsonl'),join(root,'bridge.sock'));
   const identity=()=>({agentId:'agent',sessionId,runtimeEpoch:transport.operatorEpoch,serviceEpoch:service.serviceEpoch,capability:transport.accountControlsCapability});
-  transport.bind({command:async()=>{throw Error('No prompt commands allowed');},attached(){},detached(){},error:error=>errors.push(error),accountControlsIdentity:identity,accountControls:request=>request.operation==='snapshot'?service.getSnapshot({sessionId,...(request.providerId?{providerId:request.providerId}:{})}):service.switchAccount(request.request)});
+  transport.bind({command:async()=>{throw Error('No prompt commands allowed');},attached(){},detached(){},error:error=>errors.push(error),accountControlsIdentity:identity,
+   accountControls:request=>request.operation==='snapshot'
+    ?service.getSnapshot({sessionId,providerId:request.providerId})
+    :service.switchAccount(request.request)});
   transport.start();client=net.connect(transport.pipePath);await once(client,'connect');
   writeAccountControlsDescriptor(join(root,'.pi/paseo-bridge'),{version:1,socketPath:accountControlsSocketPath(transport.pipePath),...identity()});
   const handlers=new Map();const load=name=>name==='@getpaseo/plugin'?{defineRpc:contract=>contract,defineSettings:contract=>contract}:name==='node:os'?{...require(name),homedir:()=>root}:require(name);
@@ -67,29 +66,31 @@ test('actual Pi account service switches via compiled Paseo private transport wi
   const context={paseo:{agents:{ref:id=>({refresh:async()=>({agent:{id,workspaceId:'workspace',provider:'pi'}})})}}};
   const invoke=async(name,input)=>{const {contract,handler}=handlers.get(name);return contract.output.parse(await handler(contract.input.parse(input),context));};
   const target={agentId:'agent',workspaceId:'workspace'};
-  const status=await invoke('account_controls_status',target);assert.equal(status.available,true);assert.equal(status.snapshot.canSwitch,true);assert.equal(status.snapshot.defaultSelected,true);
+  const status=await invoke('account_controls_status',{...target,providerId:'openai-codex'});
+  assert.equal(status.available,true);assert.equal(status.snapshot.providerId,'openai-codex');
+  assert.equal(status.snapshot.canSwitch,true);assert.equal(status.snapshot.defaultSelected,true);
   const messagesBefore=JSON.stringify(session.messages);
-  const request={protocol:1,requestId:randomUUID(),expectedSessionId:sessionId,expectedServiceEpoch:service.serviceEpoch,expectedSelectionRevision:status.snapshot.selectionRevision,accountId:'alpha'};
-  const input={...target,expectedSessionId:sessionId,expectedRuntimeEpoch:transport.operatorEpoch,request};
-  const switched=await invoke('account_controls_switch',input);assert.equal(switched.ok,true);assert.equal(switched.snapshot.currentAccountId,'alpha');assert.equal(JSON.stringify(session.messages),messagesBefore);assert.equal(sends.length,0);
-  assert.equal(JSON.stringify(switched).includes('fixture-private'),false);
+  const request={protocol:1,requestId:randomUUID(),expectedSessionId:sessionId,
+   expectedServiceEpoch:service.serviceEpoch,
+   expectedSelectionRevision:status.snapshot.selectionRevision,
+   providerId:'openai-codex',accountId:'alpha'};
+  const input={...target,expectedSessionId:sessionId,
+   expectedRuntimeEpoch:transport.operatorEpoch,request};
+  const switched=await invoke('account_controls_switch',input);
+  assert.equal(switched.ok,true,JSON.stringify(switched));
+  assert.equal(switched.snapshot.currentAccountId,'alpha');
+  assert.equal(switched.snapshot.providerId,'openai-codex');
+  assert.equal(JSON.stringify(switched).includes(codexToken),false);
+  assert.equal(JSON.stringify(session.messages),messagesBefore);
   assert.deepEqual(await invoke('account_controls_switch',input),switched);
-  const conflict=await invoke('account_controls_switch',{...input,request:{...request,accountId:'beta'}});assert.equal(conflict.ok,false);assert.equal(conflict.reason,'request-id-conflict');
-  await session.prompt('Reply briefly.');await session.waitForIdle();assert.deepEqual(sends,[{model:'gpt-6-astra',key:'fixture-private-alpha'}]);
-  assert.equal(JSON.stringify(session.sessionManager.getEntries()).includes('fixture-private'),false);
-  const codexStatus=await invoke('account_controls_status',{...target,providerId:'openai-codex'});
-  assert.equal(codexStatus.available,true);assert.equal(codexStatus.snapshot.providerId,'openai-codex');assert.equal(codexStatus.snapshot.defaultSelected,true);
-  const beforeCodexMessages=JSON.stringify(session.messages);
-  const codexRequest={...request,requestId:randomUUID(),providerId:'openai-codex',expectedSelectionRevision:codexStatus.snapshot.selectionRevision};
-  const codexSwitched=await invoke('account_controls_switch',{...input,request:codexRequest});
-  assert.equal(codexSwitched.ok,true,JSON.stringify(codexSwitched));assert.equal(codexSwitched.snapshot.currentAccountId,'alpha');assert.equal(codexSwitched.snapshot.providerId,'openai-codex');
-  assert.equal(JSON.stringify(codexSwitched).includes(codexToken),false);
-  assert.equal((await invoke('account_controls_status',target)).snapshot.currentAccountId,'alpha','Codex switching preserves independent OpenAI selection');
-  assert.equal(JSON.stringify(session.messages),beforeCodexMessages);assert.equal(sends.length,1);
-  assert.deepEqual(await invoke('account_controls_switch',{...input,request:codexRequest}),codexSwitched);
-  const codexRestored=await invoke('account_controls_switch',{...input,request:{...codexRequest,requestId:randomUUID(),expectedSelectionRevision:codexSwitched.snapshot.selectionRevision,accountId:null}});
-  assert.equal(codexRestored.ok,true);assert.equal(codexRestored.snapshot.defaultSelected,true);
-  const current=await invoke('account_controls_status',target);
-  const restored=await invoke('account_controls_switch',{...input,request:{...request,requestId:randomUUID(),expectedSelectionRevision:current.snapshot.selectionRevision,accountId:null}});assert.equal(restored.ok,true);assert.equal(restored.snapshot.defaultSelected,true);assert.equal(sends.length,1);assert.equal(network,0);assert.deepEqual(errors,[]);
+  const conflict=await invoke('account_controls_switch',
+   {...input,request:{...request,accountId:'beta'}});
+  assert.equal(conflict.ok,false);assert.equal(conflict.reason,'request-id-conflict');
+  const restored=await invoke('account_controls_switch',{...input,request:{...request,
+   requestId:randomUUID(),expectedSelectionRevision:switched.snapshot.selectionRevision,
+   accountId:null}});
+  assert.equal(restored.ok,true);assert.equal(restored.snapshot.defaultSelected,true);
+  assert.equal(JSON.stringify(session.sessionManager.getEntries()).includes(codexToken),false);
+  assert.deepEqual(sends,[]);assert.equal(network,0);assert.deepEqual(errors,[]);
  }finally{cleanup?.();client?.destroy();transport?.close();await session?.abort();await owner?.dispose();globalThis.fetch=originalFetch;await rm(root,{recursive:true,force:true});}
 });

@@ -14,8 +14,8 @@ import {
 import {
 	accountControlsStatusRpc,
 	accountControlsSwitchRpc,
+	ACCOUNT_PROVIDER_ID,
 	type AccountControlsSnapshot,
-	type AccountProviderId,
 } from "../shared/account-controls";
 import type { Colors } from "./activity-dashboard";
 
@@ -31,7 +31,7 @@ type Selection = { agentId: string; sessionId: string; runtimeEpoch: string };
 
 export function contributeAccountControls(_client: PluginClientContext) {
 	// Compatibility entry point for older explicit contributions. Workspace account
-	// controls are retired; the companion plugin owns the account UI in all configs.
+	// controls are retired; the paseo-accounts plugin owns the account UI in all configs.
 	return () => {};
 }
 
@@ -52,7 +52,7 @@ function registerChatAccountControls(client: PluginClientContext) {
 			if (stopped || entries.get(agent.id)?.button !== button || props.context !== "agent" || props.agentId !== agent.id || props.workspaceId !== agent.workspaceId) return <View />;
 			return <View style={{ width: 340, maxWidth: "100%", padding: 12 }}>
 				<Metadata colors={props.theme.colors}>This chat and inheriting descendants only. Parent and sibling chats are unchanged.</Metadata>
-				<ProviderAccountSection key={`${props.host.id}/${props.agentId}`} agentId={props.agentId} workspaceId={props.workspaceId} hostId={props.host.id} colors={props.theme.colors} providerId="openai-codex" onBinding={() => {}} />
+				<ProviderAccountSection key={`${props.host.id}/${props.agentId}`} agentId={props.agentId} workspaceId={props.workspaceId} hostId={props.host.id} colors={props.theme.colors} onBinding={() => {}} />
 			</View>;
 		};
 		const button = client.addComposerPill({ id: "pi-codex-account", workspaceId: agent.workspaceId, agentId: agent.id,
@@ -77,7 +77,6 @@ const locks = new Map<
 >();
 let sequence = 0;
 function ProviderAccountSection({
-  providerId,
 	agentId,
 	workspaceId,
 	hostId,
@@ -89,8 +88,8 @@ function ProviderAccountSection({
 	hostId: string;
 	colors: Colors;
 	onBinding: (s: Selection) => void;
-  providerId: AccountProviderId;
 }) {
+	const providerId = ACCOUNT_PROVIDER_ID;
 	const status = useRpc(accountControlsStatusRpc),
 		change = useRpc(accountControlsSwitchRpc);
 	const [choice, setChoice] = useState<{
@@ -107,7 +106,7 @@ function ProviderAccountSection({
 		queryKey: ["pi-account-controls", hostId, agentId, workspaceId, providerId],
 		queryFn: async () => {
 			const n = ++sequence;
-			const d = await status({ agentId, workspaceId, ...(providerId === "openai-codex" ? { providerId } : {}) });
+			const d = await status({ agentId, workspaceId, providerId });
 			if (d.available && d.sessionId && d.runtimeEpoch) {
 				if (
 					bound?.sessionId &&
@@ -236,7 +235,7 @@ function ProviderAccountSection({
 						expectedSessionId: bound!.sessionId,
 						expectedServiceEpoch: fresh.serviceEpoch,
 						expectedSelectionRevision: fresh.selectionRevision,
-            ...(providerId === "openai-codex" ? { providerId } : {}),
+						providerId,
 						accountId: c.id,
 						...(c.inherit ? { inherit: true } : {}),
 					},

@@ -36,7 +36,11 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const jwt = claims => `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
 const identity = (provider, accountId, subject) => hash(JSON.stringify([provider, accountId, subject]));
 
-async function fixture({ provider = 'openai-codex', defaultSelected = false, accountId = 'same-name', subject = 'work-subject', reportedSubject = subject, reportedAccount = accountId, providerMetadata = true, supported = true, snapshots, includeOpenai = false, quotaBody } = {}) {
+async function fixture({
+  defaultSelected = false, accountId = 'same-name', subject = 'work-subject',
+  reportedSubject = subject, reportedAccount = accountId, providerMetadata = true,
+  snapshots, quotaBody,
+} = {}) {
   const rootDir = await mkdtemp(join(tmpdir(), 'session-usage-fixture-'));
   activeHome = rootDir;
   const base = join(rootDir, '.pi', 'paseo-bridge');
@@ -46,29 +50,39 @@ async function fixture({ provider = 'openai-codex', defaultSelected = false, acc
   await mkdir(dir, { mode: 0o700 });
   const accountClaims = { sub: reportedSubject, 'https://api.openai.com/auth': { chatgpt_account_id: reportedAccount, chatgpt_user_id: reportedSubject } };
   const codexCred = { type: 'oauth', access: jwt(accountClaims), expires: Date.now() + 3600000, accountId };
-  const personal = { type: 'oauth', access: jwt({ sub: 'personal-subject', chatgpt_account_id: 'personal', 'https://api.openai.com/auth': { chatgpt_account_id: 'personal', chatgpt_user_id: 'personal-subject' } }), expires: Date.now() + 3600000, accountId: 'personal' };
-  const accounts = { version: 1, providers: { 'openai-codex': { accounts: { [accountId]: codexCred } }, openai: { accounts: { [accountId]: personal } } } };
-  if (includeOpenai) accounts.providers.openai.accounts[accountId] = { ...personal, access: jwt({ sub: 'native-subject', chatgpt_account_id: 'native-account', 'https://api.openai.com/auth': { chatgpt_account_id: 'native-account', chatgpt_user_id: 'native-subject' } }), accountId: 'native-account', clientId: 'native-client', scopes: ['chatgpt.tokens.use.direct'] };
-  const auth = { 'openai-codex': includeOpenai ? { type: 'oauth', access: jwt({ sub: 'companion-subject', 'https://api.openai.com/auth': { chatgpt_account_id: 'native-account' } }), expires: Date.now() + 3600000, accountId: 'native-account' } : codexCred };
-  if (includeOpenai) auth.openai = { ...accounts.providers.openai.accounts[accountId], clientId: 'native-client', scopes: ['chatgpt.tokens.use.direct'] };
+  // A same-name login under the unmanaged built-in openai provider must never be read.
+  const personalClaims = { sub: 'personal-subject', chatgpt_account_id: 'personal',
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: 'personal', chatgpt_user_id: 'personal-subject' } };
+  const personal = { type: 'oauth', access: jwt(personalClaims), expires: Date.now() + 3600000,
+    accountId: 'personal' };
+  const accounts = { version: 1, providers: {
+    'openai-codex': { accounts: { [accountId]: codexCred } },
+    openai: { accounts: { [accountId]: personal } },
+  } };
+  const auth = { 'openai-codex': codexCred, openai: personal };
   await writeFile(join(dir, 'pi-accounts.json'), JSON.stringify(accounts), { mode: 0o600 });
   await writeFile(join(dir, 'auth.json'), JSON.stringify(auth), { mode: 0o600 });
-  if (includeOpenai) await writeFile(join(dir, 'pi-usage.json'), JSON.stringify({ openaiUseCodexUsage: true }), { mode: 0o600 });
 
   const socketPath = join(rootDir, 'controls.sock');
   let snapshotIndex = 0;
-  let activeProvider = provider;
+  const requests = [];
   const baseSnapshot = () => {
     const current = snapshots?.[Math.min(snapshotIndex, snapshots.length - 1)] ?? {};
     snapshotIndex++;
-    const providerKey = activeProvider === 'openai-codex' ? identity('openai-codex', accountId, subject) : identity('openai', 'native-account', 'native-subject');
     return {
       protocol: 1, serviceEpoch: 'service-1', selectionRevision: 3, sessionId: 'session-1',
-      ...(providerMetadata ? { providerId: current.providerId ?? activeProvider, supportedProviders: supported ? ['openai', 'openai-codex'] : ['openai'] } : {}),
-      accounts: [{ id: accountId, label: 'Work', authKind: 'oauth' }], currentAccountId: defaultSelected ? null : accountId,
-      defaultSelected, activationStatus: defaultSelected ? 'inactive' : 'active', busy: false, canSwitch: true,
-      usage: { effectiveCredential: defaultSelected ? 'chatgpt-grant-configured' : 'chatgpt-grant-matched-refreshed', status: 'local-binding-confirmed', remoteEntitlement: 'not-queried', accountKey: current.accountKey ?? providerKey,
-        ...(includeOpenai && activeProvider === 'openai' ? { nativeRegistrationKey: hash(JSON.stringify(['openai-native', 'native-client', 'native-subject'])), nativeRegistrationVersion: 1 } : {}), settingsUrl: 'https://chatgpt.com/settings/usage' },
+      ...(providerMetadata ? { providerId: 'openai-codex' } : {}),
+      accounts: [{ id: accountId, label: 'Work', authKind: 'oauth' }],
+      currentAccountId: defaultSelected ? null : accountId, defaultSelected,
+      activationStatus: defaultSelected ? 'inactive' : 'active', busy: false, canSwitch: true,
+      usage: {
+        effectiveCredential: defaultSelected
+          ? 'chatgpt-grant-configured' : 'chatgpt-grant-matched-refreshed',
+        status: 'local-binding-confirmed', remoteEntitlement: 'not-queried',
+        accountKey: current.accountKey ?? identity('openai-codex', accountId, subject),
+        settingsUrl: 'https://chatgpt.com/settings/usage',
+      },
       ...current,
     };
   };
@@ -78,7 +92,7 @@ async function fixture({ provider = 'openai-codex', defaultSelected = false, acc
       data += chunk.toString();
       const end = data.indexOf('\n'); if (end < 0) return;
       const request = JSON.parse(data.slice(0, end));
-      activeProvider = request.request?.providerId ?? 'openai';
+      requests.push(request.request);
       const result = baseSnapshot();
       socket.end(`${JSON.stringify({ v: 1, type: 'account_controls', id: request.id, success: true, agentId: 'agent', sessionId: 'session-1', runtimeEpoch: '123e4567-e89b-42d3-a456-426614174000', serviceEpoch: 'service-1', data: result })}\n`);
     });
@@ -94,25 +108,46 @@ async function fixture({ provider = 'openai-codex', defaultSelected = false, acc
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), authorization: init.headers?.Authorization, accountId: init.headers?.['ChatGPT-Account-Id'] });
-    const body = String(url).endsWith('/chatpass/apps') ? { items: [{ id: 'native-client', windows: [{ used_percent: 5, limit_window_seconds: 3600 }] }] }
-      : quotaBody ?? { plan_type: 'synthetic', rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 3600, reset_at: 2000000000 } } };
+    const body = quotaBody ?? { plan_type: 'synthetic', rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 3600, reset_at: 2000000000 } } };
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const scope = model => ({ kind: 'session', provider: 'pi', model, env: { PASEO_AGENT_ID: 'agent', PI_CODING_AGENT_DIR: dir, HOME: rootDir } });
-  const discover = async model => { snapshotIndex = 0; return (await registered.source.discover(scope(model)))[0]; };
+  const discoverAll = async model => {
+    snapshotIndex = 0;
+    return registered.source.discover(scope(model));
+  };
+  const discover = async model => (await discoverAll(model))[0];
   const fetchUsage = input => registered.source.fetch(input);
-  return { rootDir, dir, server, oldFetch, calls, codexAccess: codexCred.access, companionAccess: auth['openai-codex'].access, discover, fetchUsage, close: async () => { fsHooks = undefined; globalThis.fetch = oldFetch; server.close(); await rm(rootDir, { recursive: true, force: true }); } };
+  return { rootDir, dir, server, oldFetch, calls, requests, codexAccess: codexCred.access,
+    discover, discoverAll, fetchUsage, close: async () => {
+      fsHooks = undefined; globalThis.fetch = oldFetch; server.close();
+      await rm(rootDir, { recursive: true, force: true });
+    } };
 }
 
-test('standalone named and default Codex fetch use Codex grant with no OpenAI companion traffic', async t => {
+test('named and default Codex use the selected grant and ask only for openai-codex', async t => {
   for (const defaultSelected of [false, true]) {
     const f = await fixture({ defaultSelected }); t.after(f.close);
     const item = await f.discover('openai-codex/gpt-test');
     const report = await f.fetchUsage(item.input);
-    assert.equal(report.status, 'available', JSON.stringify({ report, calls: f.calls, input: item.input }));
+    assert.equal(report.status, 'available', JSON.stringify({ report, calls: f.calls }));
     assert.deepEqual(f.calls.map(call => call.url), ['https://chatgpt.com/backend-api/wham/usage']);
+    assert.ok(f.calls.every(call => call.authorization === `Bearer ${f.codexAccess}`));
     assert.equal(item.key, identity('openai-codex', 'same-name', 'work-subject'));
+    assert.ok(f.requests.length > 0);
+    const codexSnapshot = request =>
+      request.operation === 'snapshot' && request.providerId === 'openai-codex';
+    assert.ok(f.requests.every(codexSnapshot), JSON.stringify(f.requests));
   }
+});
+
+test('sessions on openai/ and other non-Codex models get no usage source', async t => {
+  const f = await fixture(); t.after(f.close);
+  const models = ['openai/gpt-test', 'idle-guard/astra', 'anthropic/claude-test',
+    'openai-codexx/gpt-test', undefined];
+  for (const model of models) assert.deepEqual(await f.discoverAll(model), [], String(model));
+  assert.deepEqual(f.requests, [], 'no account-controls request for non-Codex models');
+  assert.deepEqual(f.calls, []);
 });
 
 test('quota mapping preserves duration IDs, scoped limits, review windows, and over-100 utilization', async t => {
@@ -134,36 +169,10 @@ test('quota mapping preserves duration IDs, scoped limits, review windows, and o
   assert.deepEqual(report.balances, [{ id: 'credits', label: 'Credits', remaining: 9, unit: 'credits', tone: 'ok' }]);
 });
 
-test('Codex usage accepts private session-routing metadata without crossing provider bindings', async t => {
-  const sessionRouting = { version: 1, providerId: 'openai-codex', revision: 7 };
-  const f = await fixture({ snapshots: [{ sessionRouting }] }); t.after(f.close);
-  const item = await f.discover('openai-codex/gpt-test');
-  assert.equal(item.key, identity('openai-codex', 'same-name', 'work-subject'));
-  const report = await f.fetchUsage(item.input);
-  assert.equal(report.status, 'available');
-  assert.deepEqual(f.calls.map(call => call.url), ['https://chatgpt.com/backend-api/wham/usage']);
-});
-
-test('same-name OpenAI and Codex bindings retain isolated discover handles and quota cache keys', async t => {
-  const f = await fixture({ includeOpenai: true }); t.after(f.close);
-  const codex = await f.discover('openai-codex/gpt-test');
-  const openai = await f.discover('openai/gpt-test');
-  assert.notEqual(codex.key, openai.key);
-  assert.equal((await f.fetchUsage(codex.input)).status, 'available');
-  assert.equal((await f.fetchUsage(openai.input)).status, 'available');
-  assert.equal(f.calls.filter(call => call.url.endsWith('/backend-api/wham/usage')).length, 2);
-  assert.ok(f.calls.some(call => call.url === 'https://chatgpt.com/backend-api/wham/usage/chatpass/apps'));
-  const direct = f.calls.find(call => call.url === 'https://chatgpt.com/backend-api/wham/usage' && call.authorization === `Bearer ${f.codexAccess}`);
-  assert.ok(direct, 'Codex model must send selected Work Codex grant');
-  const companion = f.calls.filter(call => call.url.includes('/chatpass/apps') || (call.url === 'https://chatgpt.com/backend-api/wham/usage' && call !== direct));
-  assert.ok(companion.length >= 2 && companion.every(call => call.authorization === `Bearer ${f.companionAccess}`), 'OpenAI companion uses configured matching companion authentication, not Work Codex inference grant');
-});
-
 test('Codex refuses missing/wrong provider metadata and mismatched account or subject identity', async t => {
   for (const options of [
     { providerMetadata: false },
-    { providerMetadata: true, supported: false },
-    { providerMetadata: true, snapshots: [{ providerId: 'openai' }] },
+    { snapshots: [{ providerId: 'openai' }] },
     { reportedSubject: 'other-subject' },
     { reportedAccount: 'other-account' },
   ]) {
@@ -175,13 +184,6 @@ test('Codex refuses missing/wrong provider metadata and mismatched account or su
   }
 });
 
-test('OpenAI rejects an explicitly mismatched provider even if native registration metadata is present', async t => {
-  const f = await fixture({ includeOpenai:true, snapshots:[{providerId:'openai-codex'}] }); t.after(f.close);
-  const item = await f.discover('openai/gpt-test');
-  assert.notEqual((await f.fetchUsage(item.input)).status,'available');
-  assert.deepEqual(f.calls,[]);
-});
-
 async function managedFile(f, file) {
   const target = join(f.rootDir, 'private-' + file);
   await cp(join(f.dir, file), target); await chmod(target, 0o600); await rm(join(f.dir, file));
@@ -189,13 +191,15 @@ async function managedFile(f, file) {
   await symlink('../managed-' + file, join(f.dir, file)); return target;
 }
 
-test('managed link chains support default/named Codex and OpenAI companion without crossing logins', async t => {
-  for (const includeOpenai of [false, true]) for (const defaultSelected of [false, true]) {
-    const f = await fixture({ includeOpenai, defaultSelected }); t.after(f.close);
-    for (const file of ['auth.json','pi-accounts.json', ...(includeOpenai ? ['pi-usage.json'] : [])]) await managedFile(f, file);
-    const item = await f.discover(includeOpenai ? 'openai/gpt-test' : 'openai-codex/gpt-test');
-    const report = await f.fetchUsage(item.input); assert.equal(report.status, 'available', JSON.stringify(report));
-    assert.ok(f.calls.length > 0); assert.ok(f.calls.every(call => call.authorization === `Bearer ${includeOpenai ? f.companionAccess : f.codexAccess}`));
+test('managed link chains support default and named Codex logins', async t => {
+  for (const defaultSelected of [false, true]) {
+    const f = await fixture({ defaultSelected }); t.after(f.close);
+    for (const file of ['auth.json','pi-accounts.json']) await managedFile(f, file);
+    const item = await f.discover('openai-codex/gpt-test');
+    const report = await f.fetchUsage(item.input);
+    assert.equal(report.status, 'available', JSON.stringify(report));
+    assert.ok(f.calls.length > 0);
+    assert.ok(f.calls.every(call => call.authorization === `Bearer ${f.codexAccess}`));
   }
 });
 
@@ -231,12 +235,14 @@ test('link and file replacement during open/read invalidates results before any 
   }
 });
 
-test('missing selected named credentials never substitute a valid default or another provider login', async t => {
-  for(const includeOpenai of [false,true]) {
-    const f=await fixture({includeOpenai});t.after(f.close);
-    await writeFile(join(f.dir,'pi-accounts.json'),JSON.stringify({version:1,providers:{}}));
-    const item=await f.discover(includeOpenai?'openai/gpt-test':'openai-codex/gpt-test');
-    assert.notEqual((await f.fetchUsage(item.input)).status,'available');assert.deepEqual(f.calls,[]);
+test('missing named credentials never substitute a default or an openai login', async t => {
+  const openaiLogin = { type: 'oauth', access: 'x.e30.y', expires: Date.now() + 3600000 };
+  for (const providers of [{}, { openai: { accounts: { 'same-name': openaiLogin } } }]) {
+    const f = await fixture(); t.after(f.close);
+    await writeFile(join(f.dir, 'pi-accounts.json'), JSON.stringify({ version: 1, providers }));
+    const item = await f.discover('openai-codex/gpt-test');
+    assert.notEqual((await f.fetchUsage(item.input)).status, 'available');
+    assert.deepEqual(f.calls, []);
   }
 });
 

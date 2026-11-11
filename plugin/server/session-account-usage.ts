@@ -14,8 +14,7 @@ import {
 	windowFromReportedDuration,
 	type UsageReport,
 } from "@getpaseo/plugin/server/usage";
-import { fetchCompanionUsage } from "./companion-usage";
-import { accountControlsSnapshotSchema } from "../shared/account-controls";
+import { ACCOUNT_PROVIDER_ID, accountControlsSnapshotSchema } from "../shared/account-controls";
 import {
 	callAccountControls,
 	readAccountControlsDescriptor,
@@ -82,35 +81,22 @@ const text = (value: unknown): string | undefined =>
 		? value
 		: undefined;
 
-async function readCredential(
-	dir: string,
-	provider: "openai" | "openai-codex",
-	name: string,
-) {
+const PROVIDER = ACCOUNT_PROVIDER_ID;
+async function readCredential(dir: string, name: string) {
 	const store = await readPrivateJson(dir, "pi-accounts.json");
 	if (
 		store?.version !== 1 ||
-		!Object.hasOwn(store?.providers?.[provider]?.accounts ?? {}, name)
+		!Object.hasOwn(store?.providers?.[PROVIDER]?.accounts ?? {}, name)
 	)
 		throw new Error("Missing selected account");
-	return credentialSchema.parse(store.providers[provider].accounts[name]);
+	return credentialSchema.parse(store.providers[PROVIDER].accounts[name]);
 }
-async function readDefaultCredential(
-	dir: string,
-	provider: "openai" | "openai-codex",
-) {
+async function readDefaultCredential(dir: string) {
 	const auth = await readPrivateJson(dir, "auth.json");
-	return credentialSchema.parse(auth[provider]);
+	return credentialSchema.parse(auth[PROVIDER]);
 }
 
-type UnavailableReason =
-	| "default-oauth"
-	| "api-key"
-	| "identity"
-	| "companion-disabled"
-	| "account-file"
-	| "account-service"
-	| "binding-changed";
+type UnavailableReason = "account-file" | "account-service" | "binding-changed";
 class UsageUnavailable extends Error {
 	readonly reason: UnavailableReason;
 	constructor(reason: UnavailableReason) {
@@ -119,28 +105,18 @@ class UsageUnavailable extends Error {
 	}
 }
 
-function parseAccountControlsUsageSnapshot(value: unknown) {
-	// The private service snapshot also carries session-routing metadata; it is
-	// not part of the public account/usage contract parsed by this consumer.
-	if (!value || typeof value !== "object" || Array.isArray(value))
-		return accountControlsSnapshotSchema.parse(value);
-	const { sessionRouting: _routing, guardedDefaultSwitchVersion: _guardedSwitch, ...snapshot } = value as Record<
-		string,
-		unknown
-	>;
-	return accountControlsSnapshotSchema.parse(snapshot);
-}
-
-async function selection(agentId: string, provider: "openai" | "openai-codex" = "openai") {
+async function selection(agentId: string) {
 	const descriptor = await readAccountControlsDescriptor(agentId);
 	if (!validateAccountControlsDescriptor(descriptor, agentId))
 		throw new UsageUnavailable("account-service");
-	const snapshot = parseAccountControlsUsageSnapshot(
+	const snapshot = accountControlsSnapshotSchema.parse(
 		await callAccountControls(descriptor, {
 			operation: "snapshot",
 			sessionId: descriptor.sessionId,
-			...(provider === "openai-codex" ? { providerId: provider } : {}),
-		}).catch(() => { throw new UsageUnavailable("account-service"); }),
+			providerId: PROVIDER,
+		}).catch(() => {
+			throw new UsageUnavailable("account-service");
+		}),
 	);
 	const current = await readAccountControlsDescriptor(agentId);
 	if (
@@ -151,247 +127,33 @@ async function selection(agentId: string, provider: "openai" | "openai-codex" = 
 	)
 		throw new UsageUnavailable("binding-changed");
 	if (
-		(snapshot.providerId ?? "openai") !== provider ||
-		(provider === "openai-codex" &&
-			!snapshot.supportedProviders?.includes("openai-codex"))
-	)
-		throw new Error("Provider selection unavailable");
-	if (provider === "openai-codex") {
-		if (
-			snapshot.usage.status !== "local-binding-confirmed" ||
-			!snapshot.usage.accountKey ||
-			(snapshot.defaultSelected
-				? snapshot.usage.effectiveCredential !== "chatgpt-grant-configured"
-				: snapshot.usage.effectiveCredential !== "chatgpt-grant-matched-refreshed" ||
-					!snapshot.currentAccountId ||
-					snapshot.activationStatus !== "active")
-		)
-			throw new Error("No verified Codex OAuth binding");
-		const account = snapshot.defaultSelected
-			? undefined
-			: snapshot.accounts.find(
-					(item) =>
-						item.id === snapshot.currentAccountId && item.authKind === "oauth",
-					);
-		if (!snapshot.defaultSelected && !account)
-			throw new Error("Selected Codex account unavailable");
-		return { descriptor, snapshot, account };
-	}
-	if (
-		snapshot.usage.nativeRegistrationKey &&
-		snapshot.usage.status === "local-binding-confirmed" &&
-		(snapshot.defaultSelected || snapshot.activationStatus === "active")
-	) {
-		return {
-			descriptor,
-			snapshot,
-			account: snapshot.accounts.find(
-				(item) =>
-					item.id === snapshot.currentAccountId && item.authKind === "oauth",
-			),
-		};
-	}
-	if (
-		snapshot.defaultSelected &&
-		snapshot.usage.status === "local-binding-confirmed" &&
-		snapshot.usage.effectiveCredential === "chatgpt-grant-configured"
-	)
-		throw new UsageUnavailable(
-			snapshot.usage.nativeRegistrationVersion === 1
-				? "identity"
-				: "default-oauth",
-		);
-	if (snapshot.usage.effectiveCredential === "api-key-configured")
-		throw new UsageUnavailable("api-key");
-	if (
-		snapshot.usage.status === "local-binding-confirmed" &&
-		!snapshot.usage.accountKey
-	)
-		throw new UsageUnavailable("identity");
-	if (
-		snapshot.defaultSelected ||
-		!snapshot.currentAccountId ||
-		snapshot.activationStatus !== "active" ||
 		snapshot.usage.status !== "local-binding-confirmed" ||
-		snapshot.usage.effectiveCredential !== "chatgpt-grant-matched-refreshed" ||
-		!snapshot.usage.accountKey
+		!snapshot.usage.accountKey ||
+		(snapshot.defaultSelected
+			? snapshot.usage.effectiveCredential !== "chatgpt-grant-configured"
+			: snapshot.usage.effectiveCredential !== "chatgpt-grant-matched-refreshed" ||
+				!snapshot.currentAccountId ||
+				snapshot.activationStatus !== "active")
 	)
-		throw new Error("No verified named OAuth binding");
-	const account = snapshot.accounts.find(
-		(item) =>
-			item.id === snapshot.currentAccountId && item.authKind === "oauth",
-	);
-	if (!account) throw new Error("Selected account unavailable");
+		throw new Error("No verified Codex OAuth binding");
+	const account = snapshot.defaultSelected
+		? undefined
+		: snapshot.accounts.find(
+				(item) => item.id === snapshot.currentAccountId && item.authKind === "oauth",
+			);
+	if (!snapshot.defaultSelected && !account)
+		throw new Error("Selected Codex account unavailable");
 	return { descriptor, snapshot, account };
 }
 
-async function binding(agentId: string, dir: string) {
-	const before = await selection(agentId);
-	if (before.snapshot.usage.nativeRegistrationKey)
-		return companionBinding(agentId, dir, before);
-	if (!before.account) throw new Error("Selected account unavailable");
-	const credential = await readCredential(dir, "openai", before.account.id);
-	const after = await selection(agentId);
-	const again = await readCredential(dir, "openai", before.account.id);
-	if (
-		JSON.stringify(before.descriptor) !== JSON.stringify(after.descriptor) ||
-		before.snapshot.selectionRevision !== after.snapshot.selectionRevision ||
-		before.account.id !== after.account?.id ||
-		credential.access !== again.access ||
-		credential.expires !== again.expires ||
-		credential.accountId !== again.accountId
-	)
-		throw new UsageUnavailable("binding-changed");
-	const claims = JSON.parse(
-		Buffer.from(credential.access.split(".")[1] ?? "", "base64url").toString(
-			"utf8",
-		),
-	);
-	const claimId =
-		text(claims?.["https://api.openai.com/auth"]?.chatgpt_account_id) ??
-		text(claims?.chatgpt_account_id);
-	if (claimId && credential.accountId && claimId !== credential.accountId)
-		throw new Error("Conflicting account identity");
-	const accountId = claimId ?? credential.accountId;
-	const subject = text(
-		claims?.sub ?? claims?.["https://api.openai.com/auth"]?.chatgpt_user_id,
-	);
-	const accountKey = hash(JSON.stringify(["openai", accountId, subject]));
-	if (
-		!accountId ||
-		!subject ||
-		before.snapshot.usage.accountKey !== accountKey ||
-		after.snapshot.usage.accountKey !== before.snapshot.usage.accountKey
-	)
-		throw new Error("Account identity unavailable");
-	const label =
-		text(claims?.["https://api.openai.com/profile"]?.email) ??
-		text(claims?.email) ??
-		before.account.label;
-	// Credential-derived fingerprint stays private; public locators contain only a random handle.
-	const fingerprint = hash(
-		JSON.stringify([
-			dir,
-			before.descriptor,
-			before.snapshot.selectionRevision,
-			before.account.id,
-			credential,
-		]),
-	);
-	return {
-		credential,
-		accountId,
-		label,
-		fingerprint,
-		key: accountKey,
-		clientId: undefined as string | undefined,
-	};
-}
-
-const nativeSchema = credentialSchema.extend({
-	clientId: z.string().min(1).max(512),
-	scopes: z
-		.array(z.string())
-		.refine((scopes) => scopes.includes("chatgpt.tokens.use.direct")),
-});
-async function companionBinding(
-	agentId: string,
-	dir: string,
-	before: Awaited<ReturnType<typeof selection>>,
-) {
-	let settings;
-	try {
-		settings = await readPrivateJson(dir, "pi-usage.json");
-	} catch {
-		throw new UsageUnavailable("companion-disabled");
-	}
-	if (settings.openaiUseCodexUsage !== true)
-		throw new UsageUnavailable("companion-disabled");
-	const load = async () => {
-		const auth = await readPrivateJson(dir, "auth.json");
-		const rawNative = before.snapshot.defaultSelected
-			? auth.openai
-			: (await readPrivateJson(dir, "pi-accounts.json"))?.providers?.openai
-					?.accounts?.[before.snapshot.currentAccountId!];
-		const native = nativeSchema.parse(rawNative);
-		const credential = credentialSchema.parse(auth["openai-codex"]);
-		const nativeClaims = JSON.parse(
-			Buffer.from(native.access.split(".")[1] ?? "", "base64url").toString(
-				"utf8",
-			),
-		);
-		const subject = text(nativeClaims?.sub);
-		if (
-			!subject ||
-			hash(JSON.stringify(["openai-native", native.clientId, subject])) !==
-				before.snapshot.usage.nativeRegistrationKey
-		)
-			throw new Error("Native registration changed");
-		const claims = JSON.parse(
-			Buffer.from(credential.access.split(".")[1] ?? "", "base64url").toString(
-				"utf8",
-			),
-		);
-		const accountId = text(
-			claims?.["https://api.openai.com/auth"]?.chatgpt_account_id,
-		);
-		if (!accountId || credential.accountId !== accountId)
-			throw new Error("Invalid companion account");
-		if (native.expires <= Date.now() || credential.expires <= Date.now())
-			throw new Error("Companion or native login expired");
-		return {
-			native,
-			credential,
-			accountId,
-			label:
-				text(claims?.["https://api.openai.com/profile"]?.email) ??
-				text(claims?.email),
-		};
-	};
-	const first = await load();
-	const after = await selection(agentId);
-	const second = await load();
-	if (
-		JSON.stringify(before.descriptor) !== JSON.stringify(after.descriptor) ||
-		before.snapshot.selectionRevision !== after.snapshot.selectionRevision ||
-		before.snapshot.currentAccountId !== after.snapshot.currentAccountId ||
-		before.snapshot.usage.nativeRegistrationKey !==
-			after.snapshot.usage.nativeRegistrationKey ||
-		JSON.stringify(first) !== JSON.stringify(second) ||
-		(await readPrivateJson(dir, "pi-usage.json")).openaiUseCodexUsage !== true
-	)
-		throw new UsageUnavailable("binding-changed");
-	return {
-		credential: first.credential,
-		accountId: first.accountId,
-		label: first.label ?? "Codex companion",
-		clientId: first.native.clientId,
-		key: hash(
-			JSON.stringify([
-				"openai-companion",
-				before.snapshot.usage.nativeRegistrationKey,
-				first.accountId,
-			]),
-		),
-		fingerprint: hash(
-			JSON.stringify([
-				dir,
-				before.descriptor,
-				before.snapshot.selectionRevision,
-				first,
-			]),
-		),
-	};
-}
-
 async function codexBinding(agentId: string, dir: string) {
-	const before = await selection(agentId, "openai-codex");
+	const before = await selection(agentId);
 	const load = async () =>
 		before.snapshot.defaultSelected
-			? readDefaultCredential(dir, "openai-codex")
-			: readCredential(dir, "openai-codex", before.account!.id);
+			? readDefaultCredential(dir)
+			: readCredential(dir, before.account!.id);
 	const credential = await load();
-	const after = await selection(agentId, "openai-codex");
+	const after = await selection(agentId);
 	const again = await load();
 	if (
 		JSON.stringify(before.descriptor) !== JSON.stringify(after.descriptor) ||
@@ -417,7 +179,7 @@ async function codexBinding(agentId: string, dir: string) {
 	const subject = text(
 		claims?.sub ?? claims?.["https://api.openai.com/auth"]?.chatgpt_user_id,
 	);
-	const key = hash(JSON.stringify(["openai-codex", accountId, subject]));
+	const key = hash(JSON.stringify([PROVIDER, accountId, subject]));
 	if (
 		!accountId ||
 		!subject ||
@@ -433,25 +195,23 @@ async function codexBinding(agentId: string, dir: string) {
 			text(claims?.email) ??
 			before.account?.label ??
 			"Codex",
-			fingerprint: hash(
-				JSON.stringify([
-					dir,
-					before.descriptor,
-					before.snapshot.selectionRevision,
-					before.snapshot.currentAccountId,
-					before.snapshot.defaultSelected,
-					credential,
-				]),
-			),
+		fingerprint: hash(
+			JSON.stringify([
+				dir,
+				before.descriptor,
+				before.snapshot.selectionRevision,
+				before.snapshot.currentAccountId,
+				before.snapshot.defaultSelected,
+				credential,
+			]),
+		),
 		key,
-		clientId: undefined as string | undefined,
 	};
 }
 
 type Locator = {
 	handle: string;
 	dir: string;
-	provider: "openai" | "openai-codex";
 	fingerprint: string;
 	touched: number;
 	verified: boolean;
@@ -461,37 +221,31 @@ const missing = (reason?: UnavailableReason) =>
 	unavailable({
 		kind: "no_quota",
 		detail:
-			reason === "default-oauth"
-				? "Reload Pi to publish the native registration proof required for companion usage."
-				: reason === "companion-disabled"
-					? "Companion usage is off. Enable openaiUseCodexUsage in pi-usage.json only for matching OpenAI/Codex accounts and workspaces."
-					: reason === "api-key"
-						? "Subscription quota is unavailable for an API-key login. Use OpenAI's usage settings for billing usage."
-						: reason === "identity"
-							? "The current model's native OpenAI registration could not be verified. Custom authentication/origins or an unavailable grant cannot use companion quotas."
-							: reason === "account-file"
-								? "The selected account's local authentication file was rejected or could not be read safely. No fallback login was used."
-								: reason === "account-service"
-									? "The current Pi account service is unavailable. No fallback login was used."
-									: reason === "binding-changed"
-										? "The selected account binding changed. Refresh usage for the current selection."
-										: "The selected Pi account binding could not be verified. No other login's usage is substituted.",
+			reason === "account-file"
+				? "The selected account's local authentication file was rejected or could not be read safely. No fallback login was used."
+				: reason === "account-service"
+					? "The current Pi account service is unavailable. No fallback login was used."
+					: reason === "binding-changed"
+						? "The selected account binding changed. Refresh usage for the current selection."
+						: "The selected Pi account binding could not be verified. No other login's usage is substituted.",
 	});
 
-/** Read-only, session-selected OAuth quota. Never refreshes or switches credentials. */
+/**
+ * Read-only quota for the session-selected Codex account. Only Pi sessions on
+ * openai-codex/ models are reported; other providers, including the built-in
+ * openai provider, get no source. Never refreshes or switches credentials.
+ */
 export function registerSessionAccountUsage(server: PluginServerContext) {
 	const locators = new Map<string, Locator>();
-	const locatorKey = (agentId: string, provider: Locator["provider"]) =>
-		JSON.stringify([agentId, provider]);
 	server.registerUsageSource({
-		id: "pi-selected-openai",
-		label: "OpenAI / Codex",
+		id: "pi-selected-codex",
+		label: "Codex",
 		input: inputSchema,
 		async discover(scope) {
 			if (
 				scope.kind !== "session" ||
 				scope.provider !== "pi" ||
-				!/^(openai|idle-guard|openai-codex)\//.test(scope.model ?? "")
+				!scope.model?.startsWith(`${PROVIDER}/`)
 			)
 				return [];
 			const agentId = scope.env.PASEO_AGENT_ID;
@@ -501,38 +255,31 @@ export function registerSessionAccountUsage(server: PluginServerContext) {
 				join(scope.env.HOME || homedir(), ".pi", "agent");
 			for (const [id, item] of locators)
 				if (Date.now() - item.touched > 30 * 60_000) locators.delete(id);
-			const provider = scope.model?.startsWith("openai-codex/")
-				? "openai-codex"
-				: "openai";
-			let found: Awaited<ReturnType<typeof binding>> | Awaited<ReturnType<typeof codexBinding>> | undefined;
+			let found: Awaited<ReturnType<typeof codexBinding>> | undefined;
 			let reason: UnavailableReason | undefined;
 			try {
-				found = provider === "openai-codex"
-					? await codexBinding(agentId, dir)
-					: await binding(agentId, dir);
+				found = await codexBinding(agentId, dir);
 			} catch (error) {
 				if (error instanceof UsageUnavailable) reason = error.reason;
 				else if (error instanceof AccountFileRejected) reason = "account-file";
 			}
 			const fingerprint =
 				found?.fingerprint ?? `unavailable:${dir}:${reason ?? "binding"}`;
-			const key = locatorKey(agentId, provider);
-			const previous = locators.get(key);
+			const previous = locators.get(agentId);
 			const locator: Locator =
 				previous?.fingerprint === fingerprint
 					? previous
 					: {
 							handle: randomUUID(),
 							dir,
-							provider,
 							fingerprint,
 							touched: Date.now(),
 							verified: Boolean(found),
 							reason,
 						};
 			locator.touched = Date.now();
-			locators.delete(key);
-			locators.set(key, locator);
+			locators.delete(agentId);
+			locators.set(agentId, locator);
 			while (locators.size > 1000)
 				locators.delete(locators.keys().next().value!);
 			return [
@@ -540,7 +287,7 @@ export function registerSessionAccountUsage(server: PluginServerContext) {
 					key: found?.key ?? hash(`unavailable\0${agentId}`),
 					...(found ? { label: found.label } : {}),
 					harness: "Pi",
-					sessionOnly: !found || Boolean(found.clientId),
+					sessionOnly: !found,
 					input: { agentId, handle: locator.handle },
 				},
 			];
@@ -548,35 +295,19 @@ export function registerSessionAccountUsage(server: PluginServerContext) {
 		async fetch(raw): Promise<UsageReport> {
 			try {
 				const input = inputSchema.parse(raw);
-				const locator = (["openai", "openai-codex"] as const)
-					.map((provider) => locators.get(locatorKey(input.agentId, provider)))
-					.find((item) => item?.handle === input.handle);
-				if (!locator) return missing();
+				const locator = locators.get(input.agentId);
+				if (!locator || locator.handle !== input.handle) return missing();
 				if (!locator.verified) return missing(locator.reason);
 				const check = async () => {
-					const current =
-						locator.provider === "openai-codex"
-							? await codexBinding(input.agentId, locator.dir)
-							: await binding(input.agentId, locator.dir);
+					const current = await codexBinding(input.agentId, locator.dir);
 					if (
-						locators.get(locatorKey(input.agentId, locator.provider)) !== locator ||
+						locators.get(input.agentId) !== locator ||
 						current.fingerprint !== locator.fingerprint
 					)
 						throw new UsageUnavailable("binding-changed");
 					return current;
 				};
 				const current = await check();
-				if (current.clientId)
-					return await fetchCompanionUsage(
-						{
-							clientId: current.clientId,
-							access: current.credential.access,
-							accountId: current.accountId,
-						},
-						async () => {
-							await check();
-						},
-					);
 				if (current.credential.expires <= Date.now())
 					return unavailable({
 						kind: "expired",

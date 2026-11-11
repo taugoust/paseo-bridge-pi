@@ -21,7 +21,7 @@ const inStore = (path: string) => path.startsWith("/nix/store/");
  */
 export async function readPrivateAccountJson(
 	dir: string,
-	file: "auth.json" | "pi-accounts.json" | "pi-usage.json",
+	file: "auth.json" | "pi-accounts.json",
 ): Promise<any> {
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
@@ -62,10 +62,8 @@ export async function readPrivateAccountJson(
 			remember(next, stat);
 			path = next;
 		}
-		const settings = file === "pi-usage.json";
-		const expectedOwner = settings && inStore(path) ? 0 : uid;
-		const valid = (stat: Stats) => stat.isFile() && stat.uid === expectedOwner &&
-			!(stat.mode & (settings ? 0o022 : 0o077)) && stat.size <= 1024 * 1024;
+		const valid = (stat: Stats) => stat.isFile() && stat.uid === uid &&
+			!(stat.mode & 0o077) && stat.size <= 1024 * 1024;
 		const final = snapshots.get(path)?.stat;
 		if (!final || !valid(final)) fail();
 		// Nonblocking also makes a file-to-FIFO replacement fail closed, not hang.

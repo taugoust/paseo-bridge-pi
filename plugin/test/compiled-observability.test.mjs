@@ -58,7 +58,7 @@ test("explicit dormant Activity retains meters and isolation without retired wor
 		runtimeEpoch: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
 	};
 	let status = { data: identity };
-	const accountSnapshot = { protocol: 1, serviceEpoch: "service-1", selectionRevision: 0, sessionId: "session", accounts: [{ id: "named-1", label: "Work", authKind: "oauth" }], currentAccountId: null, defaultSelected: true, activationStatus: "active", busy: false, canSwitch: true, usage: { effectiveCredential: "unknown", status: "unknown", remoteEntitlement: "not-queried", settingsUrl: "https://chatgpt.com/settings/usage" } };
+	const accountSnapshot = { protocol: 1, serviceEpoch: "service-1", selectionRevision: 0, sessionId: "session", providerId: "openai-codex", accounts: [{ id: "named-1", label: "Work", authKind: "oauth" }], currentAccountId: null, defaultSelected: true, activationStatus: "active", busy: false, canSwitch: true, usage: { effectiveCredential: "unknown", status: "unknown", remoteEntitlement: "not-queried", settingsUrl: "https://chatgpt.com/settings/usage" } };
 	let accountStatus = { data: { available: true, sessionId: "session", runtimeEpoch: identity.runtimeEpoch, snapshot: accountSnapshot, reason: null }, isError: false }, switchCalls = [], switchResult = { ok: true, requestId: "00000000-0000-4000-8000-000000000001", snapshot: accountSnapshot }, switchReject = false, updatedAt = 100, openedUrls = [], statusResponseGates = [];
 	const snap = (feature, data) => ({
 		data: {
@@ -259,7 +259,7 @@ test("explicit dormant Activity retains meters and isolation without retired wor
 		] });
 		assert.equal(pill.id, "pi-activity");
 		assert.equal(pill.agentId, "agent");
-		assert.equal(headers.length, 0, "retired workspace Accounts never registers, even with the companion disabled");
+		assert.equal(headers.length, 0, "retired workspace Accounts never registers, even with paseo-accounts disabled");
 		let tree = render();
 		assert.equal(
 			nodes(tree).filter((n) => n.type === "SettingsSection").length,
