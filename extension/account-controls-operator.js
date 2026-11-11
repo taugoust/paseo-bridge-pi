@@ -59,7 +59,8 @@ export function validateAccountControlsEnvelope(value, identity) {
       rename: ["accountId", "label"], remove: ["accountId"], default: ["accountId"],
     }[m.operation];
     if (!Array.isArray(fields) || Object.keys(m).some(key => !["operation", "sessionId", "providerId", ...fields].includes(key))) return false;
-    if (m.operation === "add") return ["oauth", "api_key"].includes(m.method)
+    // Codex accounts sign in with OAuth only.
+    if (m.operation === "add") return m.method === "oauth"
       && (m.accountName === undefined || (typeof m.accountName === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(m.accountName)));
     if (m.operation === "cancel-login") return typeof m.accountName === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(m.accountName);
     if (m.operation === "default" && m.accountId === null) return true;
