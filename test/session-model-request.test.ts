@@ -18,12 +18,12 @@ test("title requests use registry dispatch instead of bypassing selected-account
   assert.deepEqual(calls[0][2], { maxTokens: 1024 });
 });
 
-test("guarded title requests use the captured profile and later ones follow switches", async t => {
+test("virtual-model title requests use the captured profile and later ones follow switches", async t => {
   let profile = { providerId: "openai-codex", accountId: "Personal" };
   const references: any[] = [], calls: any[] = [];
   let finish: (value: any) => void = () => {};
   api(t, { protocol: 1, prepareRequest: async () => ({ ...profile }), physicalModelReference: (_ctx: any, captured: any) => { references.push(captured); return { provider: captured.providerId, id: "main" }; } });
-  const ctx = { model: { provider: "idle-guard", id: "alias", api: "pi-virtual" }, modelRegistry: {
+  const ctx = { model: { provider: "virtual-fixture", id: "alias", api: "pi-virtual" }, modelRegistry: {
     find: (provider: string, id: string) => ({ provider, id }),
     streamSimple: (model: any) => { calls.push(model); return { result: () => calls.length === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ content: "second" }) }; },
   } };

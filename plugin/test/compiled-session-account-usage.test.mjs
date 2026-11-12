@@ -143,7 +143,7 @@ test('named and default Codex use the selected grant and ask only for openai-cod
 
 test('sessions on openai/ and other non-Codex models get no usage source', async t => {
   const f = await fixture(); t.after(f.close);
-  const models = ['openai/gpt-test', 'idle-guard/astra', 'anthropic/claude-test',
+  const models = ['openai/gpt-test', 'anthropic/claude-test',
     'openai-codexx/gpt-test', undefined];
   for (const model of models) assert.deepEqual(await f.discoverAll(model), [], String(model));
   assert.deepEqual(f.requests, [], 'no account-controls request for non-Codex models');

@@ -28,7 +28,7 @@ export async function completeWithSessionModel(ctx: Context, context: any, optio
     if (!model) throw new Error(`Unavailable session model: ${reference.provider}/${reference.id}`);
     if (profile) model = value.bindModelRequest(model, profile);
   }
-  if (!model || model.api === "pi-virtual" || ["idle-guard", "idle-guard-proxy", "session-follow"].includes(model.provider)) {
+  if (!model || model.api === "pi-virtual" || model.provider === "session-follow") {
     throw new Error("A physical session model is required; refusing title-model fallback");
   }
   return ctx.modelRegistry.streamSimple(model, context, options).result();
