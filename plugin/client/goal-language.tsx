@@ -30,6 +30,8 @@ const copy = [
   ["waitUnknown","Wait deadline unavailable in this runtime","此运行时无法提供等待截止时间"],["waitExternal","Waiting for an external message or explicit resume; no safety deadline","等待外部消息或显式继续，没有安全截止时间"],
   ["pullRequests","Pull requests","拉取请求"],["openPr","Open PR","打开拉取请求"],["prOpen","Open","打开"],["prMerged","Merged","已合并"],["prClosed","Closed","已关闭"],
   ["ciPassed","CI passed","CI 已通过"],["ciRunning","CI running","CI 运行中"],["ciFailed","CI failed","CI 失败"],
+  ["mergeGate","Merge gate","合并检查"],["gatePassed","Passed","已通过"],["gateWaiting","Waiting","等待中"],["gateFailed","Failed","失败"],
+  ["closedUnmerged","Closed without merging","未合并即关闭"],["notMergedYet","Not merged yet","尚未合并"],
   ["pendingState","pending","待处理"],["inProgressState","in progress","进行中"],["completedState","completed","已完成"],["blockedState","blocked","受阻"],
 ] as const;
 const english = Object.fromEntries(copy.map(([id,en]) => [id,en]));

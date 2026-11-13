@@ -38,6 +38,7 @@ import { isActiveAgent, isActiveWorkStatus } from "../shared/work-display";
 import { isDormantIndependentAgent } from "../shared/independent-state";
 import { WorkStatusRing } from "./work-status-ring";
 import { Metadata, NativeButton, NativeRow, OutputWell, WorkAction } from "./presentation";
+import { HarnessChecks, subagentChecks } from "./harness-checks";
 import {
 	createAgentConversationTabs,
 	WorkerConversation,
@@ -1071,6 +1072,8 @@ function HarnessPanel({
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
 							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
 						)}
+						{kind === "subagents" && "checks" in row && row.checks?.length ? <HarnessChecks title="Harness checks" colors={theme.colors}
+							checks={subagentChecks(row.checks)} /> : null}
 						{selectedId === id ? selectedDetail : null}
 					</View>
 					</Fragment>

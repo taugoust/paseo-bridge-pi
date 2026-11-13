@@ -51,6 +51,8 @@ export const goalPrSchema = z.object({
 export const delegatedGoalEntrySchema = z.object({
   planning: goalPlanningSchema.optional(),
   prs: z.array(goalPrSchema).max(20).optional(),
+  checks: z.array(z.object({ command: z.string().min(1).max(1024), verdict: z.enum(["ok", "pending", "failed", "closed"]),
+    detail: z.string().max(200).optional(), at: z.number().nonnegative() }).strict()).max(20).optional(),
   review: z.array(goalReviewReferenceSchema).max(16).optional(), reviewTruncated: z.boolean().optional(),
   diagnostics: z.object({
     waitDeadline: z.number().nonnegative().nullable().optional(), lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),

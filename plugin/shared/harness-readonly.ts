@@ -45,7 +45,10 @@ const taskIdentity = {
   paseoAgentId: z.string().max(256).optional(), paseoWorkspaceId: z.string().max(256).optional(),
 };
 const taskSource = z.object({ agentId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(256), sessionId: z.string().min(1).max(256), runtimeEpoch: z.string().uuid() });
-const task = z.object({ source: taskSource.optional(), parentKey: z.string().max(2048).optional(), ...taskIdentity, reaped: z.boolean().optional(), status: z.string().max(40), title: z.string().max(500), summary: z.string().max(4000).optional(), kind: z.enum(["foreground", "subagent"]).optional(), needsAttention: z.boolean().optional() });
+const task = z.object({ source: taskSource.optional(), parentKey: z.string().max(2048).optional(), ...taskIdentity, reaped: z.boolean().optional(), status: z.string().max(40), title: z.string().max(500), summary: z.string().max(4000).optional(), kind: z.enum(["foreground", "subagent"]).optional(), needsAttention: z.boolean().optional(),
+  checks: z.array(z.object({ command: z.string().min(1).max(8192),
+    status: z.enum(["not-run", "checking", "passed", "failed", "unavailable", "interrupted", "cancelled", "timed-out", "stale"]),
+    exitCode: z.number().int().nullable(), finishedAt: z.string().max(64).nullable() }).strict()).max(8).optional() });
 export const harnessStatusRpc = defineRpc({ name: "harness_status", input: z.object(target), output: z.object({
   available: z.boolean(), sessionId: z.string().nullable(), runtimeEpoch: z.string().uuid().nullable(), reason: z.string().nullable(),
 }) });
