@@ -4,15 +4,18 @@ import { openExternalUrl } from "@getpaseo/plugin/client";
 import type { DelegatedGoal } from "./delegated-goals";
 import { Metadata, type PresentationColors } from "./presentation";
 import { GoalButton, useGoalText } from "./goal-language";
+import { goalWorkingColor } from "./goal-ticket-ui";
 
 type GoalPr = NonNullable<DelegatedGoal["prs"]>[number];
 
 const STATE_LABEL = { open: "Open", merged: "Merged", closed: "Closed" } as const;
 const CI_LABEL = { green: "CI passed", pending: "CI running", failed: "CI failed" } as const;
 
+/** Green when merged, red when closed or failing, blue while CI runs. */
 function stateColor(pr: GoalPr, colors: PresentationColors) {
   if (pr.state === "merged") return colors.statusSuccess;
   if (pr.state === "closed" || pr.ci === "failed") return colors.statusDanger;
+  if (pr.ci === "pending") return goalWorkingColor;
   return colors.foregroundMuted;
 }
 
