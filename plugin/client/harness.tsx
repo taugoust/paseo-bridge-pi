@@ -269,6 +269,8 @@ function registerHarness(client: PluginClientContext) {
 						kind: "action",
 						onPress: () => {
 							if (stopped || entries.get(agent.id) !== entry) return;
+							const view = work.view(workspaceId, agent.id);
+							view.opened = (view.opened ?? 0) + 1;
 							work.select(workspaceId, agent.id);
 							client.openPanel("work", { workspaceId, location: "workspace" });
 						},
@@ -484,6 +486,19 @@ function WorkOverview(
 	const [completed, setCompleted] = useState(props.view.completed);
 	props.view.section = section;
 	props.view.completed = completed;
+	// Opening Work from the pill shows what is running, not the last section viewed.
+	// Wait until the counts have loaded, then act once per press.
+	const liveSection = summary.agents.runningCount + summary.agents.waitingCount > 0 ? "agents"
+		: summary.jobs.active + summary.foreground.active > 0 ? "jobs" : undefined;
+	const loaded = summary.agents.available && summary.jobs.available && summary.foreground.available;
+	useEffect(() => {
+		if (!loaded || (props.view.opened ?? 0) === (props.view.handled ?? 0)) return;
+		props.view.handled = props.view.opened;
+		if (liveSection && liveSection !== section) {
+			props.view.section = liveSection;
+			setSection(liveSection);
+		}
+	});
 	const completedView = {
 		completed,
 		toggleCompleted: () => {
