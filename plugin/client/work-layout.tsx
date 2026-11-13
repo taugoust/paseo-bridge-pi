@@ -5,9 +5,9 @@ import { Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Metadata, nativeText, type PresentationColors } from "./presentation";
 
-/** The column every section sits in. Goals needs room for its list and details side by side. */
-export function WorkColumn({ wide = false, children }: { wide?: boolean; children: ReactNode }) {
-  return <View style={{ width: "100%", maxWidth: wide ? 1040 : 760, alignSelf: "center", paddingHorizontal: 16 }}>
+/** The column every section sits in. One width for all sections, so the tabs never move. */
+export function WorkColumn({ children }: { children: ReactNode }) {
+  return <View style={{ width: "100%", maxWidth: 960, alignSelf: "center", paddingHorizontal: 16 }}>
     {children}
   </View>;
 }

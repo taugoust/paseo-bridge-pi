@@ -493,7 +493,7 @@ function WorkOverview(
 	};
 	return (
 		<View style={{ flex: 1, width: "100%", minWidth: 0, gap: 16, paddingTop: 4 }}>
-			<WorkColumn wide={section === "goals"}>
+			<WorkColumn>
 				<TabStrip
 					colors={colors}
 					selected={section}
@@ -511,7 +511,7 @@ function WorkOverview(
 				/>
 			</WorkColumn>
 			<WorkScroll key={section} view={props.view} scrollKey={section}>
-				<WorkColumn wide={section === "goals"}>
+				<WorkColumn>
 					{section === "jobs" ? (
 						<JobsOverview {...props} {...completedView} />
 					) : section === "agents" ? (
@@ -902,7 +902,7 @@ function HarnessPanel({
 					</>
 				) : null}
 				</>}
-				{selectedWorker && openConversation
+				{selectedWorker && openConversation && viewMode !== "completed"
 					? <NativeButton colors={theme.colors} label="Open chat" disabled={!!openingId} onPress={() => openWorker(selectedWorker)} style={{ alignSelf: "flex-start", paddingVertical: 4, paddingHorizontal: 10 }} />
 					: taskLink && navigation?.openAgent
 						? <NativeButton colors={theme.colors} label="Open chat" onPress={() => navigation.openAgent({ agentId: taskLink, serverId: host.id })} style={{ alignSelf: "flex-start", paddingVertical: 4, paddingHorizontal: 10 }} />
@@ -976,7 +976,7 @@ function HarnessPanel({
 				const label = "jobId" in row
 					? `${row.name ?? row.jobId}${viewMode === "active" || row.status === "completed" ? "" : ` · ${row.status}`} · ${elapsed(row.createdAt, ["starting", "running"].includes(row.status) ? null : row.updatedAt)}${row.observationOnly ? " · observation only" : ""}`
 					: `${title} · ${metadata}`;
-				const opensChat = kind === "subagents" && viewMode === "completed" && !!openConversation && !("childId" in row && (attemptGroups.get(taskGroupKey(row))?.length ?? 0) > 1);
+				const opensChat = false;
 				return (
 					<Fragment key={"childId" in row ? treeAttemptKey(row) : id}>
 					{"fromSubagent" in row && row.fromSubagent === true && (index === 0 || !("fromSubagent" in ordered[index - 1] && ordered[index - 1].fromSubagent === true)) ? (
