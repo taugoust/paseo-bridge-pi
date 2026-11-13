@@ -68,7 +68,7 @@ export function HarnessChecks({ checks, colors, title, open = false }: {
       <CheckList checks={checks} colors={colors} />
     </View>;
   }
-  return <View style={{ paddingLeft: 16 }}>
+  return <View>
     <NativeRow colors={colors} title={`${title} (${checks.length})`} expanded={expanded} onPress={() => setExpanded(!expanded)}
       trailing={<Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={14} color={colors.foregroundMuted} />} />
     {expanded ? <View style={{ paddingHorizontal: 12, paddingBottom: 10 }}><CheckList checks={checks} colors={colors} /></View> : null}
