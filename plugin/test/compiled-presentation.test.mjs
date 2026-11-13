@@ -37,7 +37,8 @@ test('compiled unsupported Goals shows read-only legacy state and history with r
 
   const calls=[];
   const localLoad = name => {
-    if(name==='react') { const react=load(name); return {...react,useEffect(){},useRef:initial=>react.useState(()=>({current:initial}))[0]}; }
+    if(name==='react') { const react=load(name); return {...react,useEffect(){},useLayoutEffect(){},useSyncExternalStore:(_subscribe,get)=>get(),useRef:initial=>react.useState(()=>({current:initial}))[0]}; }
+    if(name==='react-native') return {...load(name),Platform:{OS:'web'},Animated:{Value:class{interpolate(){return 0;}},View:'AnimatedView'},Easing:{linear:value=>value},AccessibilityInfo:{isReduceMotionEnabled:async()=>true,addEventListener:()=>({remove(){}})}};
     if(name==='@getpaseo/plugin') return {defineRpc:contract=>contract};
     if(name==='@getpaseo/plugin/client') return {useRpc:contract=>async input=>{calls.push({name:contract.name,input}); return reply;}};
     if(name==='@getpaseo/plugin/client/ui') return {SettingsSection:'SettingsSection',SettingsCard:'SettingsCard',SettingsSelect:'SettingsSelect',SettingsAction:'SettingsAction'};
@@ -54,28 +55,44 @@ test('compiled unsupported Goals shows read-only legacy state and history with r
   assert.ok(connect); connect.props.onPress();
   all=draw();
   const findButton=(items,label)=>items.find(n=>n.type==='Pressable' && n.props.accessibilityLabel===label);
+  const completedHeading=items=>items.filter(n=>n.type==='Pressable' && /^Completed, \d+$/.test(n.props.accessibilityLabel??''));
   const assertReadOnly = items => {
-    for (const label of ['Create','Pause','Resume','Edit','Clear','Limits','Add subtask'])
+    for (const label of ['Create','Pause','Resume','Start','Edit','Clear','Clear goal','···','Edit limits','Save task'])
       assert.equal(findButton(items,label),undefined,`${label} must not mutate legacy parent goals`);
+    const newGoal=findButton(items,'New goal');
+    assert.ok(!newGoal || newGoal.props.disabled,'creating goals needs the current extensions');
+    assert.equal(items.some(n=>n.type==='Text' && ['Add task','Pause the goal to add tasks'].includes(n.props.children)),false,'legacy goals have no checklist editing');
     assert.equal(items.some(n=>n.type==='TextInput'),false,'legacy goals have no editing fields');
-    assert.ok(items.some(n=>n.type==='Text' && n.props.children==='Reload Pi to enable independent child goals. Assigned goals are read-only here.'));
+    assert.ok(items.some(n=>n.type==='Text' && n.props.children==='Reload Pi to enable creation of independent goals.'));
   };
   assertReadOnly(all);
+  assert.ok(all.some(n=>n.type==='Text' && n.props.children==='No goals yet'));
   reply.snapshot.goal={id:'goal-1',status:'active',text:'Ship safely',automaticTurns:2,tokensUsed:120,tasks:[]};
   all=draw();
   assertReadOnly(all);
   assert.ok(all.some(n=>n.type==='Text' && n.props.children==='Ship safely'));
+  findButton(all,'Ship safely').props.onPress();
+  all=draw();
+  assertReadOnly(all);
+  assert.ok(all.some(n=>n.type==='Text' && n.props.accessibilityRole==='header' && n.props.children==='Ship safely'),'the assigned goal opens its read-only page');
+  findButton(all,'Back to goals').props.onPress();
   reply.snapshot.goal.status='paused';
   reply.snapshot.completedGoals=[{id:'done-1',status:'completed',text:'Earlier goal',summary:'Done',endedAt:1,tasks:[]}];
   all=draw();
   assertReadOnly(all);
-  assert.equal(all.filter(n=>n.type==='Pressable' && n.props.accessibilityLabel==='Completed').length,1,'history control is not duplicated');
-  findButton(all,'Completed').props.onPress();
+  assert.equal(completedHeading(all).length,1,'history control is not duplicated');
+  assert.equal(all.some(n=>n.type==='Text' && n.props.children==='Earlier goal'),false,'history starts collapsed');
+  completedHeading(all)[0].props.onPress();
   all=draw();
   assertReadOnly(all);
   assert.ok(all.some(n=>n.type==='Text' && n.props.children==='Earlier goal'),'legacy history still expands');
-  assert.ok(findButton(all,'Hide completed'));
+  assert.equal(completedHeading(all)[0].props.accessibilityState.expanded,true,'the same heading collapses it again');
   assert.equal(calls.some(c=>c.name==='workflows_control'),false,'read-only legacy display never sends mutations');
+  reply.available=false;
+  all=draw();
+  assert.ok(all.some(n=>n.type==='Text' && n.props.children==='This chat runs an older Pi'),'an older Pi gets a plain notice');
+  assert.ok(!all.some(n=>n.type==='Text' && n.props.children==='Reload Pi to enable Worktree and Goal.'));
+  reply.available=true;
   slots=[];
   const drawTrees=()=>{cursor=0;return nodes(WorktreesPanel(props));};
   let trees=drawTrees();
@@ -86,7 +103,16 @@ test('compiled unsupported Goals shows read-only legacy state and history with r
   assert.equal(trees.some(n=>n.type==='Text' && /No .*worktrees|No Git repositories/.test(String(n.props.children))),false,'failed inventory is not rendered as complete empty inventory');
   reply.snapshot.worktreeError='Permission denied reading repository';
   trees=drawTrees();
-  assert.ok(trees.some(n=>n.type==='Text' && n.props.children===reply.snapshot.worktreeError),'other inventory errors remain visible');
+  assert.ok(trees.some(n=>n.type==='Text' && n.props.children==="Some worktrees couldn't be listed and were skipped."),'other inventory errors are reported');
+  assert.equal(trees.some(n=>n.type==='Text' && /No .*worktrees|No Git repositories/.test(String(n.props.children))),false,'a partial inventory is not rendered as complete empty inventory');
+  assert.equal(trees.some(n=>n.type==='Text' && n.props.children===reply.snapshot.worktreeError),false,'the raw error waits behind Show');
+  const show=trees.find(n=>n.type==='Pressable' && nodes(n.props.children).some(child=>child.type==='Text' && child.props.children==='Show'));
+  assert.equal(show.props.accessibilityState.expanded,false);
+  show.props.onPress();
+  trees=drawTrees();
+  const raw=trees.find(n=>n.type==='Text' && n.props.children===reply.snapshot.worktreeError);
+  assert.ok(raw,'the exact inventory error remains available');
+  assert.equal(raw.props.selectable,true);
 });
 
 const palettes = [

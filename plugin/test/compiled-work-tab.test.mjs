@@ -96,7 +96,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
   const load = name => {
     if (name === '@getpaseo/plugin') return { defineRpc: contract => contract, defineSettings };
     if (name === '@getpaseo/plugin/client') return { useSettings: contract => { settingsContract = contract; return settings; }, useRpc: contract => async input => { calls.push({ name: contract.name, input }); return {}; } };
-    if (name === '@getpaseo/plugin/client/ui') return { SettingsAction: 'SettingsAction', SettingsSection: 'SettingsSection', SettingsRow: 'SettingsRow', SettingsToggle: 'SettingsToggle' };
+    if (name === '@getpaseo/plugin/client/ui') return { SettingsAction: 'SettingsAction', SettingsSection: 'SettingsSection', SettingsRow: 'SettingsRow', SettingsToggle: 'SettingsToggle', Icon: 'Icon' };
     if (name === '@getpaseo/plugin/client/react-native') return { ScrollView: 'ScrollView', Icon: 'Icon', TextInput: 'TextInput' };
     if (name === 'react-native') return { ActivityIndicator: 'ActivityIndicator', View: 'View', Text: 'Text', Pressable: 'Pressable',
       Animated: { Value: class { interpolate() { return 'rotation'; } }, View: 'AnimatedView' },
@@ -143,8 +143,12 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
   const panel = host => { const work = host.panels.filter(panel => panel.id === 'work'); assert.equal(work.length, 1); assert.equal(work[0].context, 'workspace'); assert.deepEqual(work[0].locations, ['workspace']); return work[0].Component; };
   const props = { context: 'workspace', workspaceId: 'w', host: { id: 'host' }, theme: { colors: { foreground: '#fff', foregroundMuted: '#aaa', surface0: '#111', surface1: '#222', surface2: '#333', border: '#444', statusSuccess: '#0f0', statusWarning: '#fa0', statusDanger: '#f00' } }, layout: { platform: 'web', compact: false } };
   const render = (host = first, overrides = {}) => { queries.length = 0; return ui.render(panel(host), { ...props, ...overrides }); };
-  const select = (tree, section) => { const tab = nodes(tree).find(node => node.props?.accessibilityRole === 'tab' && node.props.children?.props?.children === section); assert.ok(tab, section); tab.props.onPress(); };
-  const selected = tree => nodes(tree).find(node => node.props?.accessibilityRole === 'tab' && node.props.accessibilityState.selected)?.props.children.props.children;
+  const select = (tree, section) => { const tab = nodes(tree).find(node => node.props?.accessibilityRole === 'tab' && node.props.accessibilityLabel === section); assert.ok(tab, section); tab.props.onPress(); };
+  const selected = tree => nodes(tree).find(node => node.props?.accessibilityRole === 'tab' && node.props.accessibilityState.selected)?.props.accessibilityLabel;
+  const tabCount = (tree, section) => { const tab = nodes(tree).find(node => node.props?.accessibilityRole === 'tab' && node.props.accessibilityLabel === section); return nodes(tab).filter(node => node.type === 'Text' && typeof node.props.children === 'number').map(node => node.props.children)[0]; };
+  // "Completed · N": the one control that shows finished jobs or agents below the active list.
+  const completedHeading = tree => { const found = nodes(tree).filter(node => node.type === 'Pressable' && /^Completed, \d+$/.test(node.props.accessibilityLabel ?? '')); assert.ok(found.length <= 1, 'one Completed heading'); return found[0]; };
+  const finishedLabel = /^[^·]+ · (Done|Failed|Lost|Cancelled)( · .+)?$/;
   const scroll = tree => nodes(tree).find(node => node.type === 'ScrollView');
   try {
     const icon = pill(first, 'a').button.icon;
@@ -194,20 +198,45 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     let tree = render();
     assert.equal(queries.filter(query => query.queryKey[0] === 'harness-status').at(-1).queryKey[1], 'b');
     const tabNodes = nodes(tree).filter(node => node.props?.accessibilityRole === 'tab');
-    assert.equal(tabNodes.length, 4, 'Work retains four native sections at narrow width');
+    assert.equal(tabNodes.length, 4, 'Work retains four native sections');
+    assert.deepEqual(tabNodes.map(node => node.props.accessibilityLabel), ['Jobs', 'Agents', 'Worktrees', 'Goals']);
+    assert.ok(nodes(tree).some(node => node.props?.accessibilityRole === 'tablist'), 'sections use the shared tab strip');
+    assert.deepEqual(tabNodes.map(node => nodes(node).find(n => n.type === 'Icon')?.props.name), ['SquareTerminal', 'Bot', 'GitBranch', 'Target'], 'each section tab carries its icon');
+    assert.deepEqual(['Jobs', 'Agents', 'Worktrees', 'Goals'].map(section => tabCount(tree, section)), [undefined, undefined, undefined, undefined], 'no counts without live work');
     assert.ok(tabNodes.every(node => (typeof node.props.style === 'function' ? node.props.style({pressed:false}) : node.props.style)?.minHeight >= 44), 'tabs retain accessible touch targets at narrow widths');
     assert.ok(tabNodes.some(node => node.props.accessibilityState?.selected && (typeof node.props.style === 'function' ? node.props.style({pressed:false}) : node.props.style)?.borderBottomWidth === 2), 'selected section has native underline feedback');
     select(tree, 'Jobs'); tree = render();
-    const jobsAction = nodes(tree).find(node => node.type === 'SettingsAction' && node.props.actionLabel === 'Completed');
-    assert.ok(jobsAction, 'Jobs uses the host SettingsAction via shared WorkAction');
-    assert.equal(jobsAction.props.style, undefined, 'Jobs action has no custom button styling');
-    workAgents = [];
+    assert.ok(!nodes(tree).some(node => node.type === 'SettingsAction'), 'Jobs has no Completed action row');
+    assert.match(text(tree), /Loading job status/, 'unknown status is not presented as an empty list');
+    assert.doesNotMatch(text(tree), /No jobs running/);
+    workAgents = []; workJobs = [];
+    tree = render();
+    assert.match(text(tree), /No jobs running/, 'an idle Jobs section shows its empty state');
+    assert.equal(completedHeading(tree), undefined, 'no Completed heading without finished jobs');
     workJobs = [
       { jobId: 'job-grandchild', name: 'Grandchild fixture', status: 'running', createdAt: '2026-01-01', updatedAt: null, observationOnly: false, fromSubagent: true },
       { jobId: 'job-direct', name: 'Direct fixture', status: 'running', createdAt: '2026-01-01', updatedAt: null, observationOnly: false },
       { jobId: 'job-child', name: 'Child fixture', status: 'running', createdAt: '2026-01-01', updatedAt: null, observationOnly: true, fromSubagent: true },
+      { jobId: 'job-finished', name: 'Finished fixture', status: 'completed', createdAt: '2026-01-01', updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(), observationOnly: false },
+      { jobId: 'job-broken', name: 'Broken fixture', status: 'failed', createdAt: '2026-01-01', updatedAt: new Date(Date.now() - 3 * 3_600_000).toISOString(), observationOnly: false },
     ];
     tree = render();
+    assert.doesNotMatch(text(tree), /No jobs running/);
+    assert.equal(tabCount(tree, 'Jobs'), 3, 'the Jobs tab counts live jobs only');
+    const jobsHeading = completedHeading(tree);
+    assert.equal(jobsHeading.props.accessibilityLabel, 'Completed, 2');
+    assert.equal(jobsHeading.props.accessibilityState.expanded, false);
+    assert.doesNotMatch(text(tree), /Finished fixture|Broken fixture/, 'finished jobs start collapsed');
+    jobsHeading.props.onPress(); tree = render();
+    assert.equal(completedHeading(tree).props.accessibilityState.expanded, true);
+    const finishedJob = nodes(tree).find(node => node.type === 'Pressable' && node.props.accessibilityLabel?.startsWith('Finished fixture'));
+    assert.match(text(finishedJob), /Done · 5 min ago/, 'finished rows say how they ended and when');
+    assert.ok(nodes(finishedJob).some(node => node.type === 'Icon' && node.props.name === 'CircleCheck' && node.props.color === '#0f0'));
+    const brokenJob = nodes(tree).find(node => node.type === 'Pressable' && node.props.accessibilityLabel?.startsWith('Broken fixture'));
+    assert.match(text(brokenJob), /Failed · 3 h ago/);
+    assert.ok(nodes(brokenJob).some(node => node.type === 'Icon' && node.props.name === 'CircleX' && node.props.color === '#f00'));
+    completedHeading(tree).props.onPress(); tree = render();
+    assert.doesNotMatch(text(tree), /Finished fixture/, 'the heading collapses the finished list again');
     assert.equal(nodes(tree).filter(node => node.props?.accessibilityRole === 'header' && node.props.children === 'From subagents').length, 1);
     assert.ok(text(tree).indexOf('Direct fixture') < text(tree).indexOf('From subagents'), 'direct jobs retain their first section');
     assert.ok(text(tree).indexOf('Grandchild fixture') > text(tree).indexOf('From subagents'));
@@ -225,18 +254,18 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     assert.equal(selected(tree), 'Goals', 'new source does not inherit another source section');
     assert.equal(queries.filter(query => query.queryKey[0] === 'harness-status').at(-1).queryKey[1], 'a');
     select(tree, 'Agents'); tree = render();
-    const agentsAction = nodes(tree).find(node => node.type === 'SettingsAction' && node.props.actionLabel === 'Completed');
-    assert.ok(agentsAction, 'Agents uses the host SettingsAction via shared WorkAction');
-    assert.equal(agentsAction.type, jobsAction.type);
-    assert.deepEqual(Object.keys(agentsAction.props).sort(), Object.keys(jobsAction.props).sort());
-    assert.equal(agentsAction.props.style, undefined);
+    assert.ok(!nodes(tree).some(node => node.type === 'SettingsAction'), 'Agents has no Completed action row');
+    assert.match(text(tree), /Loading agent status/);
+    workAgents = []; tree = render();
+    assert.match(text(tree), /No agents running/, 'an idle Agents section shows its empty state');
+    assert.equal(completedHeading(tree), undefined);
     workAgents = [
       ...Array.from({ length: 5 }, (_, i) => ({ taskId: `task-${i}`, childId: `child-${i}`, title: `Worker ${i}`, status: i < 3 ? 'completed' : 'running', reaped: false, attempt: 1, runtimeId: `runtime-${i}` })),
       { taskId: 'old-task', childId: 'old-child', title: 'Old worker', status: 'completed', reaped: true, attempt: 1, runtimeId: null },
     ];
     tree = render();
     const rows = tree => nodes(tree).filter(n => n.type === 'Pressable' && /^(Worker \d|Old worker|Helper|Urgent|Renamed native child|URGENT[^·]*) ·/.test(n.props?.accessibilityLabel ?? ''));
-    const completedRows = tree => nodes(tree).filter(n => n.type === 'SettingsAction' && /^(Worker \d|Old worker|Helper|Urgent|Renamed native child|URGENT)/.test(n.props?.label ?? ''));
+    const completedRows = tree => rows(tree).filter(n => finishedLabel.test(n.props.accessibilityLabel));
     assert.equal(rows(tree).length, 5);
     {
       const originalRows = workAgents;
@@ -279,7 +308,16 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     tree = render(first, { layout: { platform: 'web', compact: true } });
     assert.equal(Object.assign({}, ...rows(tree)[0].props.style({})).minHeight, 44);
     tree = render();
-    assert.equal(nodes(tree).find(n => n.type === 'SettingsAction').props.label, '');
+    assert.ok(!nodes(tree).some(n => n.type === 'SettingsAction'));
+    assert.doesNotMatch(text(tree), /No agents running/, 'idle retained agents are not an empty section');
+    const agentsHeading = completedHeading(tree);
+    assert.equal(agentsHeading.props.accessibilityLabel, 'Completed, 1', 'only the reaped worker counts as finished');
+    assert.equal(agentsHeading.props.accessibilityState.expanded, false);
+    assert.deepEqual(Object.keys(agentsHeading.props).sort(), Object.keys(jobsHeading.props).sort(), 'Agents and Jobs share the same Completed heading');
+    assert.deepEqual(agentsHeading.props.style, jobsHeading.props.style);
+    assert.equal(tabCount(tree, 'Agents'), 2, 'the Agents tab counts running agents, not idle ones');
+    const list = nodes(tree).find(n => n.type === 'View' && n.props.style?.borderWidth === 1 && n.props.style.borderRadius === 8 && n.props.style.overflow === 'hidden');
+    assert.ok(rows(tree).every(row => nodes(list).includes(row)), 'agent rows share one bordered list');
     assert.equal(rows(tree).filter(n => n.props.accessibilityLabel.includes('Idle')).length, 3);
     assert.ok(!text(tree).includes('Old worker'));
     assert.equal(first.screens.length, 0);
@@ -288,7 +326,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     assert.match(text(tree), /Worker transcript evidence/);
     assert.equal(rows(tree).length, 5, 'historical inline expansion retains the identical list');
     assert.equal(nodes(tree).filter(n => n.props?.testID === 'work-agent-detail').length, 0, 'no new detail screen');
-    assert.ok(nodes(tree).some(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open child chat'), 'historical chat button retained');
+    assert.ok(nodes(tree).some(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open chat'), 'an expanded idle worker still offers its chat');
     const liveQuery = queries.find(q => q.queryKey[0] === 'worker-conversation');
     assert.equal(liveQuery.refetchInterval, 1200);
     assert.equal(liveQuery.refetchOnReconnect, true);
@@ -305,7 +343,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     assert.doesNotMatch(text(tree), /Previous attempts/, 'collapsed primary row has no peer history control');
     rows(tree).find(n => n.props.accessibilityLabel.startsWith('Worker 0 ·')).props.onPress(); tree = render();
     assert.deepEqual(queries.find(q => q.queryKey[0] === 'worker-conversation').queryKey.slice(6, 10), ['task-0', 'resumed-child', 2, 'resumed-runtime'], 'explicit latest click binds resumed trace');
-    assert.ok(text(tree).indexOf('Previous attempts (1)') > text(tree).indexOf('Open child chat'), 'history is at bottom after current trace and child chat action');
+    assert.ok(text(tree).indexOf('Previous attempts (1)') > text(tree).indexOf('Open chat'), 'history is at bottom after current trace and child chat action');
     nodes(tree).find(n => n.type === 'Pressable' && text(n).includes('Previous attempts (1)')).props.onPress(); tree = render();
     nodes(tree).find(n => n.type === 'Pressable' && text(n).includes('Attempt 1')).props.onPress(); tree = render();
     assert.deepEqual(queries.filter(q => q.queryKey[0] === 'worker-conversation').map(q => q.queryKey.slice(6, 10)), [
@@ -319,26 +357,32 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     resumedAttempt.reaped = true;
     resumedAttempt.status = 'completed';
     tree = render();
-    nodes(tree).find(n => n.type === 'SettingsAction' && n.props.actionLabel === 'Completed').props.onPress(); tree = render();
-    const completedWithHistory = completedRows(tree).find(n => n.props.label === 'Worker 0');
-    assert.ok(completedWithHistory, 'latest reaped task appears as a native completed action row');
-    assert.equal(completedWithHistory.props.hint, 'Completed', 'preserve the existing execution label rather than introducing Finished or claiming delivered success');
-    assert.equal(completedWithHistory.props.actionLabel, 'Details');
+    assert.ok(!completedRows(tree).length, 'finished workers wait behind the Completed heading');
+    assert.equal(completedHeading(tree).props.accessibilityLabel, 'Completed, 2');
+    completedHeading(tree).props.onPress(); tree = render();
+    const completedWithHistory = completedRows(tree).find(n => n.props.accessibilityLabel.startsWith('Worker 0 ·'));
+    assert.ok(completedWithHistory, 'latest reaped task appears as a completed row');
+    assert.equal(completedWithHistory.props.accessibilityLabel, 'Worker 0 · Done', 'completed status reads as Done, with no age when none was recorded');
+    assert.ok(nodes(completedWithHistory).some(n => n.type === 'Icon' && n.props.name === 'CircleCheck'), 'finished rows lead with their outcome icon');
+    assert.equal(completedWithHistory.props.accessibilityState.expanded, false);
     completedWithHistory.props.onPress(); tree = render();
+    assert.equal(completedRows(tree).find(n => n.props.accessibilityLabel.startsWith('Worker 0 ·')).props.accessibilityState.expanded, true);
+    assert.match(text(tree), /Worker transcript evidence/, 'a finished worker expands to its retained transcript');
     assert.match(text(tree), /Previous attempts/);
-    assert.ok(nodes(tree).some(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open child chat'), 'completed task with history expands and preserves chat action');
+    assert.ok(!nodes(tree).some(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open chat'), 'finished workers do not offer to open a chat');
     nodes(tree).find(n => n.type === 'Pressable' && text(n).includes('Previous attempts (1)')).props.onPress(); tree = render();
     nodes(tree).find(n => n.type === 'Pressable' && text(n).includes('Attempt 1')).props.onPress(); tree = render();
     assert.ok(queries.some(q => q.queryKey[0] === 'worker-conversation' && q.queryKey[7] === 'child-0' && q.queryKey[8] === 1), 'completed task historical trace remains reachable');
     const nextAttempt = { ...resumedAttempt, childId: 'third-child', attempt: 3, runtimeId: 'third-runtime', status: 'running', reaped: false };
     workAgents.push(nextAttempt); tree = render();
-    assert.ok(!completedRows(tree).some(n => n.props.label === 'Worker 0'), 'latest active attempt removes its task from Completed');
+    assert.ok(!completedRows(tree).some(n => n.props.accessibilityLabel.startsWith('Worker 0 ·')), 'latest active attempt removes its task from Completed');
     assert.equal(nodes(tree).filter(n => n.props?.testID === 'work-agent-conversation').length, 0, 'completed Details selection cannot survive an exact attempt change');
     assert.ok(!queries.some(q => q.queryKey[0] === 'worker-conversation'), 'superseded completed selection stops both current and historical polling');
     workAgents.pop();
-    select(tree, 'Agents');
+    completedHeading(tree).props.onPress();
     workAgents.pop();
     tree = render();
+    assert.equal(completedHeading(tree).props.accessibilityState.expanded, false);
     if (!nodes(tree).some(n => n.props?.testID === 'work-agent-conversation')) {
       rows(tree).find(n => n.props.accessibilityLabel.startsWith('Worker 0 ·')).props.onPress(); tree = render();
     }
@@ -454,20 +498,28 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     assert.doesNotMatch(text(tree), /Worker transcript evidence/, 'unavailable source hides retained detail');
     assert.equal(rows(tree).length, 0);
     statusError = false; tree = render();
-    nodes(tree).find(n => n.type === 'SettingsAction' && n.props.actionLabel === 'Completed').props.onPress();
+    completedHeading(tree).props.onPress();
     tree = render();
     assert.equal(completedRows(tree).length, 1);
     assert.match(text(tree), /Old worker/);
-    assert.equal(completedRows(tree)[0].props.hint, 'Completed');
-    assert.equal(completedRows(tree)[0].props.style, undefined, 'completed rows use native SettingsAction geometry without a custom card');
+    assert.equal(completedRows(tree)[0].props.accessibilityLabel, 'Old worker · Done');
+    const completedList = nodes(tree).filter(n => n.type === 'View' && n.props.style?.borderWidth === 1 && n.props.style.borderRadius === 8 && n.props.style.overflow === 'hidden').at(-1);
+    assert.ok(nodes(completedList).includes(completedRows(tree)[0]), 'completed rows sit in one bordered list, not a card per row');
     rpcResponse = async contract => contract.name === 'harness_status'
       ? { available: true, sessionId: 's', runtimeEpoch: 'e' } : { agentId: 'history-child' };
     completedRows(tree)[0].props.onPress();
     await new Promise(resolve => setImmediate(resolve));
     tree = render();
-    assert.doesNotMatch(text(tree), /Worker transcript evidence/, 'completed click retains historical direct-chat behavior');
+    assert.equal(nodes(tree).filter(n => n.props?.testID === 'work-agent-conversation').length, 1, 'a finished worker expands to its retained transcript instead of opening a chat');
+    assert.deepEqual(queries.find(q => q.queryKey[0] === 'worker-conversation').queryKey.slice(6, 10), ['old-task', 'old-child', 1, null], 'the transcript is bound to the finished worker itself');
+    assert.match(text(tree), /Checking\s+the current state/);
+    assert.ok(!nodes(tree).some(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open chat'), 'no chat button for a finished worker');
     assert.equal(first.screens.length, 0, 'missing historical runtime never creates a replacement conversation');
     assert.equal(calls.filter(c => c.name === 'independent_agent_open').length, 0);
+    assert.equal(calls.filter(c => c.name === 'harness_subagent_route').length, 0, 'expanding a finished worker resolves no chat route');
+    completedRows(tree)[0].props.onPress(); tree = render();
+    assert.equal(nodes(tree).filter(n => n.props?.testID === 'work-agent-conversation').length, 0, 'collapsing a finished worker hides its transcript');
+    assert.ok(!queries.some(q => q.queryKey[0] === 'worker-conversation'), 'and stops polling it');
     calls.length = 0; first.screens.length = 0;
     select(tree, 'Agents');
     workAgents = undefined;
@@ -538,7 +590,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
       : { agentId: 'real-child-agent' };
     tree = render(); select(tree, 'Agents'); tree = render();
     rows(tree)[0].props.onPress(); tree = render();
-    const continuation = () => nodes(tree).find(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open child chat');
+    const continuation = () => nodes(tree).find(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Open chat');
     for (const status of ['pending', 'launching', 'starting', 'running', 'waiting', 'lost']) {
       workAgents[0].status = status; tree = render();
       assert.match(text(tree), /Worker transcript evidence/, `${status} transcript remains viewable`);
@@ -555,7 +607,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     assert.ok(continueButton, 'interactive continuation is explicit in the rendered conversation');
     continueButton.props.onPress();
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(calls.filter(c => c.name === 'independent_agent_open').length, 0, 'Open child chat must never create a snapshot chat');
+    assert.equal(calls.filter(c => c.name === 'independent_agent_open').length, 0, 'Open chat must never create a snapshot chat');
     assert.equal(calls.filter(c => c.name === 'harness_subagent_route').length, 2, 'stale click and current click each resolve only an existing route');
     assert.deepEqual(first.screens.at(-1), { screenId: 'independent-conversation', params: { agentId: 'real-child-agent' } }, 'existing verified conversation helper owns native conversation navigation');
     ui.componentProps.get('WorkOverview').openWorkspace('native-workspace');
