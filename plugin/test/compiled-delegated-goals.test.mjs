@@ -432,3 +432,20 @@ test('limit RPC schemas require exact policy routing and explicit nullable limit
  assert.equal(schemas.workflowRequestSchema.safeParse({...delegated,action:'goals.limits'}).success,true);
  assert.equal(schemas.workflowRequestSchema.safeParse({...delegated,action:'goals.limits',expectedEntryRevision:2}).success,false);
 });
+
+test('a goal shows the pull requests its coordinator reported',()=>{
+ const h=harness(),g=entry('prs','active');
+ g.prs=[
+  {ref:'github.com/o/r#5',url:'https://github.com/o/r/pull/5',title:'Add the widget',branch:'b5',state:'merged',ci:'green',checkedAt:1},
+  {ref:'gitlab.com/g/r#7',url:'https://gitlab.com/g/r/-/merge_requests/7',title:'Fix the docs',state:'open',ci:'failed',checkedAt:2},
+ ];
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);
+ const texts=JSON.stringify(nodes);
+ for(const expected of ['Pull requests','Add the widget','Fix the docs','https://github.com/o/r/pull/5'])assert.ok(texts.includes(expected),expected);
+ assert.match(texts,/Merged · /);assert.match(texts,/Open · CI failed · /);
+ assert.equal(nodes.filter(node=>node.type==='Pressable'&&node.props.accessibilityLabel==='Open PR').length,2);
+ const valid={...entry('22222222-2222-4222-8222-222222222222'),prs:g.prs};
+ assert.equal(schemas.delegatedGoalEntrySchema.safeParse(valid).success,true);
+ assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...valid,prs:[{...g.prs[0],state:'draft'}]}).success,false);
+});
