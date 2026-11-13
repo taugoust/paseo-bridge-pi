@@ -401,6 +401,7 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
       { id: 'result-row', role: 'tool', toolCallId: 'call-1', toolName: 'bash', status: 'completed', text: 'RESULT_SECRET' },
       { id: 'markdown-row', role: 'assistant', text: '# Summary\n\nA **formatted** paragraph with `inline code`.\n\n- one list item\n\n3. First numbered item.\n4. Second numbered item.' },
       { id: 'parent-row', role: 'parent', text: 'Please **review** this request. Use notify_parent then task_outcome; preserve _one_two_ as emphasis.' },
+      { id: 'task-row', role: 'parent', text: 'Parent instructions:\nTask: Update the plugin tests.\n\nAcceptance criteria: ["Only zod failures remain","Nothing is pushed"]\nReport useful findings with the reporting tool and your outcome when done.' },
     ];
     tree = render();
     const timeline = nodes(tree).find(n => n.type === 'ScrollView' && n.props.style?.maxHeight === 320);
@@ -425,6 +426,10 @@ test('compiled Work uses one workspace tab, source-scoped persistent UI, and UI-
     assert.deepEqual(orderedItems.map(n => n.props.style.marginBottom), [4, 0], 'native list item spacing is4px, with no extra per-item block gap');
     assert.ok(nodes(tree).some(n => n.type === 'View' && n.props.style?.alignSelf === 'flex-end'), 'parent input uses the native user-message bubble treatment');
     assert.equal(nodes(tree).filter(n => n.type === 'Text' && n.props.children === 'parent').length, 0, 'no separate parent role label');
+    for (const label of ['Task', 'Done when']) assert.ok(nodes(tree).some(n => n.type === 'Text' && n.props.children === label), `worker task shows ${label}`);
+    assert.ok(nodes(tree).some(n => n.type === 'Text' && n.props.children === 'Update the plugin tests.' && n.props.selectable), 'the task reads as written');
+    assert.deepEqual(nodes(tree).filter(n => n.type === 'Text' && Array.isArray(n.props.children) && n.props.children[0] === '• ').map(n => n.props.children[1]), ['Only zod failures remain', 'Nothing is pushed'], 'criteria are listed in order');
+    assert.doesNotMatch(text(tree), /Parent instructions|Acceptance criteria|Report useful findings/, 'the harness wrapper and reporting boilerplate are not shown');
     assert.doesNotMatch(text(tree), /ARGUMENT_SECRET|RESULT_SECRET|LIVE_RESULT_SECRET/, 'correlated tool results and full arguments stay inside the collapsed badge');
     const toolBadge = nodes(tree).find(n => n.type === 'Pressable' && n.props.accessibilityLabel === 'Tool Shell · git status --short · completed');
     assert.ok(toolBadge, 'badge uses native icon/name/summary presentation');
