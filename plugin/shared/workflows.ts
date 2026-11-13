@@ -48,11 +48,12 @@ export const goalPrSchema = z.object({
   branch: z.string().max(512).optional(), state: z.enum(["open", "merged", "closed"]),
   ci: z.enum(["green", "pending", "failed"]).nullable(), checkedAt: z.number().nonnegative(),
 }).strict();
+export const goalCheckSchema = z.object({ command: z.string().min(1).max(1024), verdict: z.enum(["ok", "pending", "failed", "closed"]),
+  detail: z.string().max(200).optional(), at: z.number().nonnegative() }).strict();
 export const delegatedGoalEntrySchema = z.object({
   planning: goalPlanningSchema.optional(),
   prs: z.array(goalPrSchema).max(20).optional(),
-  checks: z.array(z.object({ command: z.string().min(1).max(1024), verdict: z.enum(["ok", "pending", "failed", "closed"]),
-    detail: z.string().max(200).optional(), at: z.number().nonnegative() }).strict()).max(20).optional(),
+  checks: z.array(goalCheckSchema).max(20).optional(),
   review: z.array(goalReviewReferenceSchema).max(16).optional(), reviewTruncated: z.boolean().optional(),
   diagnostics: z.object({
     waitDeadline: z.number().nonnegative().nullable().optional(), lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
@@ -190,6 +191,8 @@ export const workflowSnapshotSchema = z
 					"complete",
 				]),
 				waiting: z.string().max(1000).nullable(),
+				prs: z.array(goalPrSchema).max(20).optional(),
+				checks: z.array(goalCheckSchema).max(20).optional(),
         waitDeadline: z.number().nonnegative().nullable().optional(),
         lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
         lastWake: z.object({ at: z.number().nonnegative(), reason: z.enum(["deadline", "custom_message", "user_input", "explicit_resume"]), customType: z.string().max(128).optional() }).strict().nullable().optional(),

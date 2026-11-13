@@ -24,6 +24,7 @@ export type AssignedTicket = Pick<DelegatedGoal, "text" | "status" | "summary"> 
   effectiveLimits?: DelegatedGoal["continuationLimits"];
   waiting?: string | null; tokensUsed?: number; tokenBudget?: number | null;
   automaticTurns?: number; noProgressTurns?: number;
+  prs?: DelegatedGoal["prs"]; checks?: DelegatedGoal["checks"];
 };
 /** Presentation only: never create registry records, revisions, or execution links. */
 export function assignedTickets(goal: Snapshot["goal"], completed: NonNullable<Snapshot["completedGoals"]> = []): AssignedTicket[] {

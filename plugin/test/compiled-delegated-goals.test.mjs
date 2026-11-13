@@ -453,3 +453,14 @@ test('a goal shows the pull requests its coordinator reported',()=>{
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse(valid).success,true);
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...valid,prs:[{...g.prs[0],state:'draft'}]}).success,false);
 });
+
+test('the current-session goal shows its pull requests and completion conditions too',()=>{
+ const h=harness();
+ const assigned={id:'33333333-3333-4333-8333-333333333333',text:'Current test goal',status:'paused',tasks:[],waiting:null,iteration:0,tokensUsed:0,tokenBudget:null,automaticTurns:0,noProgressTurns:0,safetyPauseCause:null,summary:null,
+  prs:[{ref:'github.com/o/r#9',url:'https://github.com/o/r/pull/9',title:'Current PR',state:'open',ci:'pending',checkedAt:1}],
+  checks:[{command:'forge-pr -R github.com/o/r check 9 --ci-green',verdict:'pending',detail:'CI running',at:1}]};
+ const props={registry:{version:1,revision:1,entries:[]},assignedGoal:assigned,colors,identity:'current',locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,assigned.text).props.onPress();nodes=h.draw(props);
+ const texts=JSON.stringify(nodes);
+ for(const expected of ['Pull requests','Current PR','Completion conditions','--ci-green'])assert.ok(texts.includes(expected),expected);
+});

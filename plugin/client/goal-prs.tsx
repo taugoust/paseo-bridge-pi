@@ -24,14 +24,14 @@ const TONE: Record<string, HarnessCheck["tone"]> = { ok: "passed", pending: "run
 
 /** The merge gate: the command the harness runs for each PR before the goal can complete.
  * The PR rows above already say why a check hasn't passed, so only the icon is shown. */
-export function GoalMergeGate({ goal, colors }: { goal: DelegatedGoal; colors: PresentationColors }) {
+export function GoalMergeGate({ goal, colors }: { goal: Pick<DelegatedGoal, "prs" | "checks">; colors: PresentationColors }) {
   const { t } = useGoalText();
   const checks = (goal.checks ?? []).map(check => ({ command: check.command, tone: TONE[check.verdict], status: "" }));
   return <HarnessChecks checks={checks} colors={colors} title={t("Completion conditions")} open />;
 }
 
 /** The pull or merge requests a goal produced, as its coordinator last saw them. */
-export function GoalPullRequests({ goal, colors }: { goal: DelegatedGoal; colors: PresentationColors }) {
+export function GoalPullRequests({ goal, colors }: { goal: Pick<DelegatedGoal, "prs" | "checks">; colors: PresentationColors }) {
   const { t, time } = useGoalText();
   const [error, setError] = useState<string>();
   const prs = goal.prs ?? [];
