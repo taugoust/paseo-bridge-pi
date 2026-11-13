@@ -1,6 +1,6 @@
 import { observeAgentDirectory, retainContribution } from "./agent-directory";
 import { useQuery } from "@tanstack/react-query";
-import { Component, Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { readJobs } from "./jobs-pages";
 import { readSubagents } from './subagent-pages';
 import { orderTaskTree, taskGroupKey, treeAttemptKey } from "../shared/subagent-tree";
@@ -35,24 +35,24 @@ function JobOpenButton({ hostId, terminalId, colors, onError }: {
 	hostId: string; terminalId: string; colors: PluginWorkspacePanelProps["theme"]["colors"]; onError(message: string | undefined): void;
 }) {
 	const paseo = client.usePaseo!();
-	const ref = client.useTerminals!({ hosts: [hostId] }).find(item => item.id === terminalId);
+	let ref: TerminalRef | undefined;
+	try {
+		ref = client.useTerminals!({ hosts: [hostId] }).find(item => item.id === terminalId);
+	} catch {
+		// Paseo couldn't list this host's terminals. Show no button rather than break the list.
+		ref = undefined;
+	}
 	if (!ref) return null;
 	return <NativeButton colors={colors} label="Open" style={{ paddingVertical: 2, paddingHorizontal: 10 }} onPress={() => {
 		onError(undefined);
 		try {
-			paseo.terminals.ref(ref).focus?.();
+			paseo.terminals.ref(ref!).focus?.();
 		} catch {
 			onError("Could not open the job's tab. Open it from the tab bar instead.");
 		}
 	}} />;
 }
 
-/** Hides the Open button instead of breaking the Jobs list when Paseo can't list terminals. */
-class Quietly extends Component<{ children: ReactNode }, { failed: boolean }> {
-	state = { failed: false };
-	static getDerivedStateFromError() { return { failed: true }; }
-	render() { return this.state.failed ? null : this.props.children; }
-}
 import {
 	harnessStatusRpc,
 	harnessJobsListRpc,
@@ -1057,7 +1057,7 @@ function HarnessPanel({
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
 							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
 							canOpenTerminals && "terminalId" in row && row.terminalId && viewMode !== "completed"
-								? <Quietly><JobOpenButton hostId={host.id} terminalId={row.terminalId} colors={theme.colors} onError={message => setOpenError(message)} /></Quietly>
+								? <JobOpenButton hostId={host.id} terminalId={row.terminalId} colors={theme.colors} onError={message => setOpenError(message)} />
 								: undefined,
 						)}
 						{selectedId === id ? selectedDetail : null}
