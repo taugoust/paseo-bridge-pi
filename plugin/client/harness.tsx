@@ -17,6 +17,12 @@ import {
 	type PluginWorkspacePanelProps,
 	type PluginButtonRegistration,
 } from "@getpaseo/plugin/client";
+import * as pluginClient from "@getpaseo/plugin/client";
+
+// Older apps don't export usePaseo. The export set is fixed per installation, so which
+// hook runs never changes between renders.
+const usePaseoIfAvailable: () => { terminals: { ref: unknown } } | undefined =
+	(pluginClient as { usePaseo?: () => { terminals: { ref: unknown } } }).usePaseo ?? (() => undefined);
 import {
 	harnessStatusRpc,
 	harnessJobsListRpc,
@@ -717,6 +723,20 @@ function HarnessPanel({
 	const opening = useRef(false), mounted = useRef(true);
 	const [openingId, setOpeningId] = useState<string>();
 	const [openError, setOpenError] = useState<string>();
+	const paseo = usePaseoIfAvailable();
+	/** Focuses a running job's terminal tab. Older apps can't focus terminals and say so. */
+	const openJobTab = (terminalId: string) => {
+		setOpenError(undefined);
+		try {
+			const ref = { kind: "terminal" as const, key: JSON.stringify([host.id, terminalId]), hostId: host.id, id: terminalId };
+			if (!paseo) throw new Error("unsupported");
+			const handle = (paseo.terminals.ref as (ref: unknown) => { focus?: () => void })(ref);
+			if (typeof handle.focus !== "function") throw new Error("unsupported");
+			handle.focus();
+		} catch {
+			setOpenError("Could not open the job's tab. Update Paseo, or open it from the tab bar.");
+		}
+	};
 	// Keep status centers in list coordinates: row heights change when titles wrap or reports expand.
 	const treeContainer = useRef<View>(null);
 	const treeRowRefs = useRef(new Map<string, View>());
@@ -817,6 +837,7 @@ function HarnessPanel({
 		status?: string,
 		presentation?: { title: string; detail: string; expanded?: boolean; opensChat: boolean },
 		anchorKey?: string,
+		action?: ReactNode,
 	) => (
 		<NativeRow
 			colors={theme.colors}
@@ -830,7 +851,10 @@ function HarnessPanel({
 				: status ? <View style={kind === "subagents" ? { width: 14, height: 14, alignItems: "center", justifyContent: "center" } : undefined}>{(['starting', 'launching', 'pending', 'running'].includes(status)
 				? <View accessibilityLabel="Running"><WorkStatusRing attention={false} foreground={fg} platform={layout.platform} /></View>
 				: <View accessibilityLabel={kind === "jobs" ? status : status === "lost" ? "Lost" : status === "failed" ? "Failed" : "Idle"} style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: status === "lost" || status === "failed" ? danger : kind === "jobs" && status !== "completed" ? muted : theme.colors.statusSuccess }} />)}</View> : undefined}
-			trailing={<Icon name={presentation?.opensChat ? "ChevronRight" : presentation?.expanded ? "ChevronUp" : "ChevronDown"} size={14} color={muted} />}
+			trailing={<View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+				{action}
+				<Icon name={presentation?.opensChat ? "ChevronRight" : presentation?.expanded ? "ChevronUp" : "ChevronDown"} size={14} color={muted} />
+			</View>}
 			disabled={disabled}
 			onPress={onPress}
 			style={{ paddingVertical: 8, minHeight: 44 }}
@@ -1015,6 +1039,10 @@ function HarnessPanel({
 							row.status,
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
 							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
+							paseo && "terminalId" in row && row.terminalId && viewMode !== "completed"
+								? <NativeButton colors={theme.colors} label="Open" onPress={() => openJobTab(row.terminalId!)}
+									style={{ paddingVertical: 2, paddingHorizontal: 10 }} />
+								: undefined,
 						)}
 						{selectedId === id ? selectedDetail : null}
 					</View>

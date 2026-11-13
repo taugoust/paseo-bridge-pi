@@ -38,6 +38,8 @@ const common = {
 const job = z.object({
   jobId: z.string().regex(/^job-[a-f0-9]{24}$/), status: z.string().max(40), name: z.string().max(500).optional(),
   createdAt: z.string(), updatedAt: z.string().nullable(), observationOnly: z.boolean(), fromSubagent: z.boolean().optional(),
+  /** The job's Paseo terminal tab, while it runs. */
+  terminalId: z.string().regex(/^trm_tmux_[a-f0-9]{24}$/).optional(),
 });
 const taskIdentity = {
   taskId: z.string().regex(/^subagent-task-[a-f0-9]{24}$/), childId: z.string().max(256), groupId: z.string().max(256),
