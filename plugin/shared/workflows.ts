@@ -43,8 +43,17 @@ export const goalPlanningSchema = z.object({
   dependencies: z.array(z.object({ taskId: z.string().min(1).max(128), waitsFor: z.array(z.string().min(1).max(128)).max(49) }).strict()).max(50),
   blockers: z.array(z.object({ id: z.string().uuid(), at: z.number().int().nonnegative(), reason: z.string().trim().min(1).max(500), evidence: z.string().trim().min(1).max(2000), taskId: z.string().min(1).max(128).optional(), clearedAt: z.number().int().nonnegative().optional() }).strict().refine(value => value.clearedAt === undefined || value.clearedAt >= value.at)).max(32),
 }).strict();
+export const goalPrSchema = z.object({
+  ref: z.string().min(1).max(512), url: z.string().max(4096).url(), title: z.string().max(1000).optional(),
+  branch: z.string().max(512).optional(), state: z.enum(["open", "merged", "closed"]),
+  ci: z.enum(["green", "pending", "failed"]).nullable(), checkedAt: z.number().nonnegative(),
+}).strict();
+export const goalCheckSchema = z.object({ command: z.string().min(1).max(1024), verdict: z.enum(["ok", "pending", "failed", "closed"]),
+  detail: z.string().max(200).optional(), at: z.number().nonnegative() }).strict();
 export const delegatedGoalEntrySchema = z.object({
   planning: goalPlanningSchema.optional(),
+  prs: z.array(goalPrSchema).max(20).optional(),
+  checks: z.array(goalCheckSchema).max(20).optional(),
   review: z.array(goalReviewReferenceSchema).max(16).optional(), reviewTruncated: z.boolean().optional(),
   diagnostics: z.object({
     waitDeadline: z.number().nonnegative().nullable().optional(), lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
@@ -182,6 +191,8 @@ export const workflowSnapshotSchema = z
 					"complete",
 				]),
 				waiting: z.string().max(1000).nullable(),
+				prs: z.array(goalPrSchema).max(20).optional(),
+				checks: z.array(goalCheckSchema).max(20).optional(),
         waitDeadline: z.number().nonnegative().nullable().optional(),
         lastTaskUpdateAt: z.number().nonnegative().nullable().optional(),
         lastWake: z.object({ at: z.number().nonnegative(), reason: z.enum(["deadline", "custom_message", "user_input", "explicit_resume"]), customType: z.string().max(128).optional() }).strict().nullable().optional(),

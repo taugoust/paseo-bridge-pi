@@ -12,6 +12,7 @@ import { GoalRecordedDetails } from "./goal-recorded-details";
 import { GoalPlanning } from "./goal-planning";
 import type { z } from "zod";
 import type { delegatedGoalEntrySchema, workflowSnapshotSchema } from "../shared/workflows";
+import { GoalMergeGate, GoalPullRequests } from "./goal-prs";
 
 /** The parent owns records; only the linked child owns execution. */
 export type DelegatedGoal = z.infer<typeof delegatedGoalEntrySchema>;
@@ -299,6 +300,8 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
             </View> : null}
           </View>
           {!goal.assigned ? <GoalPlanning key={`${identity}/${goal.id}/planning`} goal={goal} colors={colors} disabled={disabled} available={planningAvailable} post={(name, fields) => action(name, fields)} /> : null}
+          <GoalPullRequests goal={goal} colors={colors} />
+          <GoalMergeGate goal={goal} colors={colors} />
           {!goal.assigned ? <GoalRecordedDetails key={`${identity}/${goal.id}`} colors={colors} goal={goal} /> : null}
           {!goal.assigned ? renderReview?.(goal) : null}
           {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Summary")}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}

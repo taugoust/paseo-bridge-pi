@@ -38,6 +38,7 @@ import { isActiveAgent, isActiveWorkStatus } from "../shared/work-display";
 import { isDormantIndependentAgent } from "../shared/independent-state";
 import { WorkStatusRing } from "./work-status-ring";
 import { Metadata, NativeButton, NativeRow, OutputWell, WorkAction } from "./presentation";
+import { HarnessChecks, subagentChecks } from "./harness-checks";
 import {
 	createAgentConversationTabs,
 	WorkerConversation,
@@ -912,6 +913,10 @@ function HarnessPanel({
 			<View style={{ gap: 8, padding: 10, paddingTop: 0, ...(kind === "subagents" && viewMode !== "completed" && selectedAttempt && rows.some(row => "childId" in row && row.parentKey === treeAttemptKey(selectedAttempt)) ? { paddingLeft: 30 } : {}) }}>
 				{selectedWorker ? <>
 					{selectedWorker.title !== workerTitle(selectedWorker) ? <Metadata colors={theme.colors}>Task: {selectedWorker.title}</Metadata> : null}
+					{selectedWorker.checks?.length ? <>
+						<HarnessChecks open title="Completion conditions" colors={theme.colors} checks={subagentChecks(selectedWorker.checks)} />
+						<Text style={{ color: fg, fontWeight: "500", fontSize: 14 }}>Transcript</Text>
+					</> : null}
 					<WorkerConversation key={JSON.stringify([session, epoch, selectedWorker.childId, selectedWorker.attempt, selectedWorker.runtimeId])}
 						target={conversationTarget(selectedWorker)} epoch={conversationTarget(selectedWorker).runtimeEpoch} colors={theme.colors} platform={layout.platform} />
 				</> : <>

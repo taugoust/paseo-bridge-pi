@@ -432,3 +432,35 @@ test('limit RPC schemas require exact policy routing and explicit nullable limit
  assert.equal(schemas.workflowRequestSchema.safeParse({...delegated,action:'goals.limits'}).success,true);
  assert.equal(schemas.workflowRequestSchema.safeParse({...delegated,action:'goals.limits',expectedEntryRevision:2}).success,false);
 });
+
+test('a goal shows the pull requests its coordinator reported',()=>{
+ const h=harness(),g=entry('prs','active');
+ g.prs=[
+  {ref:'github.com/o/r#5',url:'https://github.com/o/r/pull/5',title:'Add the widget',branch:'b5',state:'merged',ci:'green',checkedAt:1},
+  {ref:'gitlab.com/g/r#7',url:'https://gitlab.com/g/r/-/merge_requests/7',title:'Fix the docs',state:'open',ci:'failed',checkedAt:2},
+ ];
+ const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);
+ const texts=JSON.stringify(nodes);
+ for(const expected of ['Pull requests','Add the widget','Fix the docs'])assert.ok(texts.includes(expected),expected);
+ assert.match(texts,/Merged · /);assert.match(texts,/"CI failed · /);assert.doesNotMatch(texts,/Open · /);
+ assert.equal(nodes.filter(node=>node.type==='Pressable'&&node.props.accessibilityLabel==='Open PR').length,2);
+ assert.ok(!texts.includes('Completion conditions'),'no gate section before the gate has run');
+ g.checks=[{command:'forge-pr -R github.com/o/r check 5 --ci-green',verdict:'ok',at:1},{command:'forge-pr -R gitlab.com/g/r check 7 --ci-green',verdict:'failed',detail:'CI failed',at:2}];
+ nodes=h.draw(props);const gate=JSON.stringify(nodes);
+ assert.ok(gate.includes('Completion conditions'));for(const word of ['gitlab.com/g/r','--ci-green'])assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children===word),word);assert.equal(nodes.filter(n=>n.props.accessibilityLabel==='Copy command').length,2);assert.ok(gate.includes('"accessibilityLabel":"passed"'));assert.ok(gate.includes('"accessibilityLabel":"failed"'));
+ const valid={...entry('22222222-2222-4222-8222-222222222222'),prs:g.prs,checks:g.checks};
+ assert.equal(schemas.delegatedGoalEntrySchema.safeParse(valid).success,true);
+ assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...valid,prs:[{...g.prs[0],state:'draft'}]}).success,false);
+});
+
+test('the current-session goal shows its pull requests and completion conditions too',()=>{
+ const h=harness();
+ const assigned={id:'33333333-3333-4333-8333-333333333333',text:'Current test goal',status:'paused',tasks:[],waiting:null,iteration:0,tokensUsed:0,tokenBudget:null,automaticTurns:0,noProgressTurns:0,safetyPauseCause:null,summary:null,
+  prs:[{ref:'github.com/o/r#9',url:'https://github.com/o/r/pull/9',title:'Current PR',state:'open',ci:'pending',checkedAt:1}],
+  checks:[{command:'forge-pr -R github.com/o/r check 9 --ci-green',verdict:'pending',detail:'CI running',at:1}]};
+ const props={registry:{version:1,revision:1,entries:[]},assignedGoal:assigned,colors,identity:'current',locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
+ let nodes=h.draw(props);button(nodes,assigned.text).props.onPress();nodes=h.draw(props);
+ const texts=JSON.stringify(nodes);
+ for(const expected of ['Pull requests','Current PR','Completion conditions','--ci-green'])assert.ok(texts.includes(expected),expected);
+});
