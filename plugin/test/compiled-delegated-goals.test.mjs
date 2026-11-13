@@ -445,10 +445,10 @@ test('a goal shows the pull requests its coordinator reported',()=>{
  for(const expected of ['Pull requests','Add the widget','Fix the docs'])assert.ok(texts.includes(expected),expected);
  assert.match(texts,/Merged · /);assert.match(texts,/"CI failed · /);assert.doesNotMatch(texts,/Open · /);
  assert.equal(nodes.filter(node=>node.type==='Pressable'&&node.props.accessibilityLabel==='Open PR').length,2);
- assert.ok(!texts.includes('Merge gate'),'no gate section before the gate has run');
+ assert.ok(!texts.includes('Completion conditions'),'no gate section before the gate has run');
  g.checks=[{command:'forge-pr -R github.com/o/r check 5 --ci-green',verdict:'ok',at:1},{command:'forge-pr -R gitlab.com/g/r check 7 --ci-green',verdict:'failed',detail:'CI failed',at:2}];
  nodes=h.draw(props);const gate=JSON.stringify(nodes);
- assert.ok(gate.includes('Merge gate'));for(const word of ['gitlab.com/g/r','--ci-green'])assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children===word),word);assert.equal(nodes.filter(n=>n.props.accessibilityLabel==='Copy command').length,2);assert.ok(gate.includes('"accessibilityLabel":"passed"'));assert.ok(gate.includes('"accessibilityLabel":"failed"'));
+ assert.ok(gate.includes('Completion conditions'));for(const word of ['gitlab.com/g/r','--ci-green'])assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children===word),word);assert.equal(nodes.filter(n=>n.props.accessibilityLabel==='Copy command').length,2);assert.ok(gate.includes('"accessibilityLabel":"passed"'));assert.ok(gate.includes('"accessibilityLabel":"failed"'));
  const valid={...entry('22222222-2222-4222-8222-222222222222'),prs:g.prs,checks:g.checks};
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse(valid).success,true);
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...valid,prs:[{...g.prs[0],state:'draft'}]}).success,false);

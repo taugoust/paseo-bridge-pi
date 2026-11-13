@@ -1072,7 +1072,7 @@ function HarnessPanel({
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
 							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
 						)}
-						{kind === "subagents" && "checks" in row && row.checks?.length ? <HarnessChecks title="Harness checks" colors={theme.colors}
+						{kind === "subagents" && "checks" in row && row.checks?.length ? <HarnessChecks title="Completion conditions" colors={theme.colors}
 							checks={subagentChecks(row.checks)} /> : null}
 						{selectedId === id ? selectedDetail : null}
 					</View>

@@ -27,7 +27,7 @@ const TONE: Record<string, HarnessCheck["tone"]> = { ok: "passed", pending: "run
 export function GoalMergeGate({ goal, colors }: { goal: DelegatedGoal; colors: PresentationColors }) {
   const { t } = useGoalText();
   const checks = (goal.checks ?? []).map(check => ({ command: check.command, tone: TONE[check.verdict], status: "" }));
-  return <HarnessChecks checks={checks} colors={colors} title={t("Merge gate")} open />;
+  return <HarnessChecks checks={checks} colors={colors} title={t("Completion conditions")} open />;
 }
 
 /** The pull or merge requests a goal produced, as its coordinator last saw them. */
