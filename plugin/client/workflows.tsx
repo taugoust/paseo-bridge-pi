@@ -2,18 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
-import { QuietWarning } from "./work-layout";
 import {
 	SettingsSelect,
 	Modal,
 } from "@getpaseo/plugin/client/ui";
 import { useRpc, type PluginAgentPanelProps } from "@getpaseo/plugin/client";
-import { Metadata, NativeButton } from "./presentation";
+import { QuietWarning, WorkEmpty } from "./work-layout";
+import { goalWorkingColor } from "./goal-ticket-ui";
+import { Metadata, NativeButton, NativeRow } from "./presentation";
 import { WorktreeOwner } from "./worktree-owner";
-import { worktreeGroups, worktreeViews, type WorktreeView } from "../shared/worktree-groups";
+import { FactText, WorktreeDiffStat, WorktreeFact, WorktreeGroupLabel, WorktreePath, WorktreeScope } from "./worktree-list";
+import { worktreeGroups, type WorktreeView } from "../shared/worktree-groups";
 import { recordedAgentName } from "../shared/worktree-agent";
-import { WorktreeWorkspaceAction } from "./worktree-workspace-action";
-import { worktreeLinkKeyboardProps } from "../shared/worktree-link";
 import { DelegatedGoals } from "./delegated-goals";
 import { GoalAgent } from "./goal-agent";
 import { GoalReview } from "./goal-review";
@@ -85,6 +85,8 @@ function WorkflowsView({
 	onOpenWorkspace,
 }: WorkflowViewProps) {
 	const [selectedTree, setSelectedTree] = useState<string>();
+	// Width of the worktree list. Facts stack their labels below 600.
+	const [listWidth, setListWidth] = useState(0);
 	const status = useRpc(workflowsStatusRpc),
 		control = useRpc(workflowsControlRpc), review = useRpc(workflowsReviewRpc);
 	const [saved] = useState(() => {
@@ -235,11 +237,194 @@ function WorkflowsView({
 		});
 	const button = (label: string, onPress: () => void, disabled = false, primary = false) =>
 		<NativeButton colors={colors} label={label} onPress={onPress} disabled={disabled} primary={primary} style={{ alignSelf: "flex-start", minHeight: 44 }} />;
+	/** Opens the worktree's workspace. The path link and the Open workspace button share this. */
+	const openWorktree = (path: string) => start("worktree.open", { path });
+
+	function renderWorktrees(current: WorkflowSnapshot) {
+		const count = visibleWorktrees.length;
+		const noRepositories = current.worktreeContainer && !current.worktreeRepositoryCount;
+		return (
+			<View onLayout={event => setListWidth(event.nativeEvent.layout.width)}
+				style={{ gap: 20, width: "100%", maxWidth: 960, alignSelf: "center", minWidth: 0 }}>
+				<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+					<Metadata colors={colors} style={{ flex: 1, paddingHorizontal: 4 }}>
+						{current.worktreeLoading ? "Loading worktrees…" : count ? `${count} ${count === 1 ? "worktree" : "worktrees"}` : ""}
+					</Metadata>
+					{!current.worktreeLoading ? (
+						<WorktreeScope colors={colors} value={saved.worktreeView}
+							onChange={value => { saved.worktreeView = value; redraw(); }} />
+					) : null}
+				</View>
+				{current.worktreeError && current.worktreeError !== "Worktree inventory timed out; open a repository directly for a narrower view." ? <QuietWarning colors={colors} summary="Some worktrees couldn't be listed and were skipped." detail={current.worktreeError} /> : null}
+				{!current.worktreeLoading && !current.worktreeError && !count ? (
+					noRepositories ? (
+						<WorkEmpty colors={colors} icon="GitBranch" title="No Git repositories found"
+							hint="Pi looks for repositories up to two directory levels below this workspace." />
+					) : (
+						<WorkEmpty colors={colors} icon="GitBranch"
+							title={saved.worktreeView === "all" ? "No additional worktrees" : saved.worktreeView === "goal" ? "No worktrees from this chat's goals" : "No worktrees from this chat"}
+							hint="Workers and goals that get their own checkout show up here.">
+							{saved.worktreeView !== "all" ? (
+								<Pressable accessibilityRole="button" hitSlop={8}
+									onPress={() => { saved.worktreeView = "all"; redraw(); }}>
+									<Metadata colors={colors} style={{ color: colors.foreground }}>Show all worktrees</Metadata>
+								</Pressable>
+							) : null}
+						</WorkEmpty>
+					)
+				) : null}
+				{groups.map(group => (
+					<View key={group.key} style={{ gap: 8 }}>
+						{/* Legacy runtimes report no repository, so their single group stays unlabelled. */}
+						{byGoal || group.trees[0]?.repositoryPath ? (
+							<WorktreeGroupLabel colors={colors} icon={byGoal ? "Target" : "FolderGit2"} label={group.label} />
+						) : null}
+						<View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1, overflow: "hidden" }}>
+							{group.trees.map((tree, index) => (
+								<View key={tree.path} style={index ? { borderTopWidth: 1, borderTopColor: colors.border } : undefined}>
+									{renderWorktree(tree, current)}
+								</View>
+							))}
+						</View>
+					</View>
+				))}
+			</View>
+		);
+	}
+
+	function renderWorktree(tree: WorkflowSnapshot["worktrees"][number], current: WorkflowSnapshot) {
+		// Ownership and working-copy safety gates are intentionally unchanged.
+		const unsafe =
+			tree.stale ||
+			tree.locked ||
+			tree.current ||
+			tree.main ||
+			tree.inUse === true ||
+			tree.changedFiles == null ||
+			tree.changedFiles > 0;
+		const guarded =
+			locked ||
+			current.busy ||
+			!current.idle ||
+			goal?.status === "active" ||
+			unsafe;
+		const workspaceUnavailable = locked || current.busy || tree.stale || !(onOpenWorkspace || navigation?.openWorkspace);
+		const ownerName = tree.recordedOwner ? recordedAgentName(tree.recordedOwner) : null;
+		const branch = tree.branch ?? (tree.detached ? "Detached HEAD" : "Branch unavailable");
+		const changed = tree.changedFiles;
+		const changedLabel = changed ? `${changed} changed ${changed === 1 ? "file" : "files"}` : "";
+		const warning = !!tree.setupError || tree.stale || tree.locked;
+		const rowState = tree.setupError ? "setup failed"
+			: tree.stale ? "stale metadata"
+			: tree.locked ? "locked"
+			: tree.main ? "main checkout"
+			: tree.current ? "current checkout"
+			: changed == null ? "status unavailable"
+			: changed > 0 ? changedLabel
+			: "clean";
+		// The branch leads when the owner name is the title. By goal also names the repository.
+		const detailParts = [
+			ownerName ? branch : "",
+			byGoal ? tree.repositoryLabel ?? tree.repositoryPath ?? "Repository unavailable" : "",
+			rowState,
+		].filter(Boolean);
+		// Capitalise the state when it starts the line.
+		if (detailParts[0] === rowState) detailParts[0] = rowState.charAt(0).toUpperCase() + rowState.slice(1);
+		const detail = detailParts.join(" · ");
+		const selected = selectedTree === tree.path;
+		const narrow = listWidth > 0 && listWidth < 600;
+		const flags = [
+			tree.main ? "Main checkout" : "",
+			tree.current ? "Current checkout" : "",
+			tree.locked ? "Locked" : "",
+			tree.stale ? "Stale metadata" : "",
+			tree.inUse ? "Assigned ownership" : "",
+		].filter(Boolean);
+		const removalBlock = tree.inUse
+			? "Assigned ownership blocks removal"
+			: tree.current
+				? "Current worktree cannot be removed"
+				: tree.locked
+					? "Worktree is locked"
+					: tree.stale
+						? "Stale worktree metadata"
+						: tree.changedFiles == null
+							? "Change status unavailable"
+							: tree.changedFiles > 0
+								? "Uncommitted changes must be preserved"
+								: tree.main ? "Main checkout cannot be removed" : locked ? "Refresh the connection before removal" : "Wait until Pi and Goal are idle";
+		return (
+			<>
+				<NativeRow colors={colors} title={ownerName ?? branch}
+					detail={detail}
+					accessibilityLabel={ownerName ?? branch}
+					accessibilityHint="Show checkout details, agent and removal options"
+					expanded={selected}
+					onPress={() => setSelectedTree(selected ? undefined : tree.path)}
+					leading={<Icon name="GitBranch" size={14}
+						color={warning ? colors.statusWarning : changed ? goalWorkingColor : colors.foregroundMuted} />}
+					trailing={
+						<View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+							{tree.diffStat ? <WorktreeDiffStat colors={colors} diffStat={tree.diffStat} /> : null}
+							<Icon name={selected ? "ChevronUp" : "ChevronDown"} size={14} color={colors.foregroundMuted} />
+						</View>
+					} />
+				{selected ? (
+					// Indented to line up with the row title (12 padding, 14 icon, 8 gap).
+					<View style={{ gap: 12, paddingLeft: 34, paddingRight: 12, paddingBottom: 12 }}>
+						<View style={{ gap: 6 }}>
+							<WorktreeFact colors={colors} label="Path" narrow={narrow}>
+								<WorktreePath colors={colors} path={tree.path} platform={layout.platform}
+									disabled={workspaceUnavailable} onOpen={() => openWorktree(tree.path)} />
+							</WorktreeFact>
+							<WorktreeFact colors={colors} label="Branch" narrow={narrow}>
+								<FactText colors={colors}>{branch}</FactText>
+							</WorktreeFact>
+							<WorktreeFact colors={colors} label="Changes" narrow={narrow}>
+								<FactText colors={colors}>
+									{changed == null ? "Working copy status unavailable" : changed ? `${changedLabel}, uncommitted` : "Clean, nothing uncommitted"}
+									{tree.includedChanges ? " · includes parent changes" : ""}
+								</FactText>
+							</WorktreeFact>
+							{flags.length ? (
+								<WorktreeFact colors={colors} label="State" narrow={narrow}>
+									<FactText colors={colors} tone={tree.stale || tree.locked ? "warning" : undefined}>{flags.join(" · ")}</FactText>
+								</WorktreeFact>
+							) : null}
+							{tree.setupError ? (
+								<WorktreeFact colors={colors} label="Setup" narrow={narrow}>
+									<FactText colors={colors} tone="warning">{tree.setupError}</FactText>
+								</WorktreeFact>
+							) : null}
+							{tree.recordedOwner && data?.sessionId && data.runtimeEpoch ? (
+								<WorktreeFact colors={colors} label="Agent" narrow={narrow}>
+									<WorktreeOwner key={JSON.stringify([tree.path, data.sessionId, data.runtimeEpoch, tree.recordedOwner])}
+										host={host} agentId={agentId} workspaceId={workspaceId} theme={theme} layout={layout}
+										owner={tree.recordedOwner} sessionId={data.sessionId} runtimeEpoch={data.runtimeEpoch} hideHeading
+										onOpenAgent={navigation?.openAgent ? id => navigation.openAgent({ agentId: id, serverId: host.id }) : undefined} />
+								</WorktreeFact>
+							) : null}
+						</View>
+						{guarded ? <Metadata colors={colors}>{removalBlock}</Metadata> : null}
+						<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+							<NativeButton colors={colors} label="Open workspace" disabled={workspaceUnavailable}
+								onPress={() => openWorktree(tree.path)}
+								style={{ paddingVertical: 4, paddingHorizontal: 10 }} />
+							<NativeButton colors={colors} label="Remove…" danger disabled={guarded}
+								onPress={() => start("worktree.remove", { path: tree.path })}
+								style={{ paddingVertical: 4, paddingHorizontal: 10 }} />
+						</View>
+					</View>
+				) : null}
+			</>
+		);
+	}
+
 	const Container = embedded ? View : ScrollView;
 	return (
 		<Container
 			{...(embedded
-				? { style: { padding: 8, gap: 8, minWidth: 0 } }
+				? { style: { padding: section === "worktrees" ? 0 : 8, gap: 8, minWidth: 0 } }
 				: {
 						style: { flex: 1, backgroundColor: colors.surface0, minWidth: 0 },
 						contentContainerStyle: { padding: 12, gap: 12 },
@@ -436,180 +621,7 @@ function WorkflowsView({
 							{!delegatedGoals ? <Metadata colors={colors}>Reload Pi to enable creation of independent goals.</Metadata> : null}
 						</>
 					) : (
-						<View style={{ gap: 4, width: "100%", maxWidth: 740, alignSelf: "center" }}>
-							<View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, paddingTop: 8, paddingBottom: 8 }}>
-							<Text style={{ paddingHorizontal: 8, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{visibleWorktrees.length} {visibleWorktrees.length === 1 ? "worktree" : "worktrees"}</Text>
-							{!snapshot.worktreeLoading ? (
-								<View accessibilityLabel="Worktree scope" style={{ flexDirection: "row", maxWidth: "100%", gap: 2, alignSelf: "flex-start", padding: 3, marginHorizontal: 4, borderRadius: 10, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border }}>
-									{worktreeViews.map(({ value, label }) => (
-										<Pressable key={value} accessibilityRole="button"
-											accessibilityState={{ selected: saved.worktreeView === value }}
-											onPress={() => { saved.worktreeView = value; redraw(); }}
-											style={{ minHeight: 44, flexShrink: 1, justifyContent: "center", paddingHorizontal: 10, borderRadius: 8, backgroundColor: saved.worktreeView === value ? colors.surface2 : "transparent" }}>
-											<Text style={{ color: colors.foreground }}>{label}</Text>
-										</Pressable>
-									))}
-								</View>
-							) : null}
-							</View>
-							{snapshot.worktreeLoading ? <Text style={{ color: colors.foregroundMuted }}>Loading worktrees…</Text> : null}
-							{snapshot.worktreeError && snapshot.worktreeError !== "Worktree inventory timed out; open a repository directly for a narrower view." ? <QuietWarning colors={colors} summary="Some worktrees couldn't be listed and were skipped." detail={snapshot.worktreeError} /> : null}
-							{!snapshot.worktreeLoading &&
-							!snapshot.worktreeError &&
-							!visibleWorktrees.length ? (
-								<Text style={{ color: colors.foregroundMuted, padding: 8 }}>
-									{snapshot.worktreeContainer &&
-									!snapshot.worktreeRepositoryCount
-										? "No Git repositories found within two directory levels"
-										: saved.worktreeView === "all"
-											? "No additional worktrees"
-											: "No session-created worktrees"}
-								</Text>
-							) : null}
-							{visibleWorktrees.map((tree) => {
-								// Ownership and working-copy safety gates are intentionally unchanged.
-								const unsafe =
-										tree.stale ||
-										tree.locked ||
-										tree.current ||
-										tree.main ||
-										tree.inUse === true ||
-										tree.changedFiles == null ||
-										tree.changedFiles > 0,
-									guarded =
-										locked ||
-										snapshot.busy ||
-										!snapshot.idle ||
-										goal?.status === "active" ||
-										unsafe,
-									ownerName = tree.recordedOwner ? recordedAgentName(tree.recordedOwner) : null,
-									branch = tree.branch ?? (tree.detached ? "Detached HEAD" : "Branch unavailable"),
-									rowState = tree.setupError ? "Setup failed" : tree.stale ? "Stale metadata" : tree.locked ? "Locked" : tree.main ? "Main checkout" : tree.current ? "Current checkout" : tree.changedFiles == null ? "Status unavailable" : tree.changedFiles > 0 ? "Uncommitted changes" : "Working copy clean",
-									selected = selectedTree === tree.path,
-									workspaceUnavailable = locked || snapshot.busy || tree.stale || !(onOpenWorkspace || navigation?.openWorkspace),
-									group = groups.find(item => item.trees[0] === tree);
-								return (
-									<View
-										key={tree.path}
-										style={{
-											borderBottomWidth: 1,
-											borderBottomColor: colors.border,
-										}}
-									>
-										{group && (byGoal || tree.repositoryPath) ? (
-											<Text
-												accessibilityRole="header"
-												style={{
-													color: colors.foreground,
-													fontWeight: "600",
-													fontSize: 13,
-													paddingHorizontal: 12,
-													paddingVertical: 8,
-													marginTop: 16,
-													marginBottom: 4,
-													borderRadius: 6,
-													backgroundColor: colors.surface1,
-												}}
-											>
-												{group.label}
-												<Text style={{ color: colors.foregroundMuted, fontWeight: "400" }}> · {group.trees.length}</Text>
-											</Text>
-										) : null}
-										<View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, paddingVertical: 4, paddingRight: 4, backgroundColor: selected ? colors.surface1 : "transparent" }}>
-										<Pressable
-											accessibilityRole="button"
-											accessibilityLabel={ownerName ?? branch}
-											accessibilityHint="Show checkout details, agent and removal options"
-											accessibilityState={{ expanded: selected }}
-											onPress={() =>
-												setSelectedTree(selected ? undefined : tree.path)
-											}
-											style={({ pressed }) => ({
-												minHeight: 52,
-												gap: 3,
-												flex: 1,
-												minWidth: 0,
-												justifyContent: "center",
-												paddingHorizontal: 12,
-												borderRadius: 8,
-												backgroundColor: pressed || selected ? colors.surface2 : "transparent",
-											})}
-										>
-											<View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
-												<Icon name={selected ? "ChevronDown" : "ChevronRight"} size={14} color={colors.foregroundMuted} />
-												<Text
-													numberOfLines={1}
-													style={{ flexShrink: 1, color: colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "600" }}
-												>
-													{ownerName ?? branch}
-												</Text>
-											</View>
-											{byGoal ? <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 20 }}>{tree.repositoryPath ?? tree.repositoryLabel ?? "Repository unavailable"}</Text> : null}
-											<Text numberOfLines={1} style={{ color: tree.setupError || tree.stale || tree.locked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 20 }}>{ownerName ? `${branch} · ` : ""}{rowState}</Text>
-										</Pressable>
-										<WorktreeWorkspaceAction path={tree.path} diffStat={tree.diffStat} disabled={workspaceUnavailable}
-											onPress={() => start("worktree.open", { path: tree.path })} colors={colors} />
-										</View>
-										{selected ? (
-											<View style={{ padding: 12, gap: 8, backgroundColor: colors.surface1, borderRadius: 8, marginBottom: 8 }}>
-												<Pressable accessibilityRole="link" accessibilityLabel={`Open workspace ${tree.path}`}
-													{...worktreeLinkKeyboardProps(layout.platform, workspaceUnavailable, () => start("worktree.open", { path: tree.path }))}
-													disabled={workspaceUnavailable}
-													accessibilityState={{ disabled: workspaceUnavailable }}
-													onPress={() => start("worktree.open", { path: tree.path })}
-													style={{ minHeight: 44, justifyContent: "center", opacity: workspaceUnavailable ? 0.5 : 1 }}>
-													<Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{tree.path} ↗</Text>
-												</Pressable>
-												<Text selectable style={{ color: colors.foregroundMuted, fontSize: 12 }}>{branch}</Text>
-												{tree.recordedOwner && data?.sessionId && data.runtimeEpoch ? (
-													<WorktreeOwner key={JSON.stringify([tree.path, data.sessionId, data.runtimeEpoch, tree.recordedOwner])}
-														host={host} agentId={agentId} workspaceId={workspaceId} theme={theme} layout={layout}
-														owner={tree.recordedOwner} sessionId={data.sessionId} runtimeEpoch={data.runtimeEpoch}
-														onOpenAgent={navigation?.openAgent ? id => navigation.openAgent({ agentId: id, serverId: host.id }) : undefined} />
-												) : null}
-												<Text style={{ color: colors.foregroundMuted }}>
-													{tree.changedFiles == null ? "Working copy status unavailable" : tree.changedFiles ? "Uncommitted changes" : "Working copy clean"}
-													{tree.main ? " · main checkout" : ""}{tree.current ? " · current" : ""}
-													{tree.inUse ? " · assigned ownership" : ""}
-												</Text>
-												{tree.includedChanges ? (
-													<Text style={{ color: colors.foregroundMuted }}>
-														Includes parent changes
-													</Text>
-												) : null}
-												{tree.setupError ? (
-													<Text style={{ color: colors.statusWarning }}>
-														{tree.setupError}
-													</Text>
-												) : null}
-												{guarded ? (
-													<Text style={{ color: colors.foregroundMuted }}>
-														{tree.inUse
-															? "Assigned ownership blocks removal"
-															: tree.current
-																? "Current worktree cannot be removed"
-																: tree.locked
-																	? "Worktree is locked"
-																	: tree.stale
-																		? "Stale worktree metadata"
-																		: tree.changedFiles == null
-																			? "Change status unavailable"
-																			: tree.changedFiles > 0
-																				? "Uncommitted changes must be preserved"
-																				: tree.main ? "Main checkout cannot be removed" : locked ? "Refresh the connection before removal" : "Wait until Pi and Goal are idle"}
-													</Text>
-												) : null}
-												<View style={{ gap: 8, minWidth: 0, width: "100%", maxWidth: 720 }}>
-													<NativeButton colors={colors} label="Remove…" disabled={guarded}
-														onPress={() => start("worktree.remove", { path: tree.path })}
-														style={{ alignSelf: "flex-start", minHeight: 44 }} />
-												</View>
-											</View>
-										) : null}
-									</View>
-								);
-							})}
-						</View>
+						renderWorktrees(snapshot)
 					)}
 				</>
 			) : null}

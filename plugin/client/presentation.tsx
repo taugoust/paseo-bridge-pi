@@ -38,14 +38,14 @@ export function Metadata({ colors, children, style, selectable = false, alert = 
   return <Text selectable={selectable} accessibilityRole={alert ? "alert" : undefined} style={[{ ...secondaryText, color: colors.foregroundMuted }, style]}>{children}</Text>;
 }
 
-export function NativeRow({ colors, title, detail, detailTone, leading, trailing, children, onPress, disabled = false, selected = false, expanded, style, accessibilityLabel, onLeadingAnchor }: {
+export function NativeRow({ colors, title, detail, detailTone, leading, trailing, children, onPress, disabled = false, selected = false, expanded, style, accessibilityLabel, accessibilityHint, onLeadingAnchor }: {
   colors: PresentationColors; title: string; detail?: string; detailTone?: "danger"; leading?: ReactNode; trailing?: ReactNode; children?: ReactNode;
-  onPress(): void; disabled?: boolean; selected?: boolean; expanded?: boolean; style?: ViewStyle; accessibilityLabel?: string;
+  onPress(): void; disabled?: boolean; selected?: boolean; expanded?: boolean; style?: ViewStyle; accessibilityLabel?: string; accessibilityHint?: string;
   /** Center of a caller-supplied 14px leading slot, relative to this row. Measured after title wrapping. */
   onLeadingAnchor?: (anchor: { x: number; y: number }) => void;
 }) {
   const [hovered, setHovered] = useState(false);
-  return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title}
+  return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title} accessibilityHint={accessibilityHint}
     aria-expanded={expanded}
     accessibilityState={{ disabled, selected, ...(expanded === undefined ? {} : { expanded }) }} disabled={disabled} onPress={onPress}
     onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)}

@@ -2,9 +2,9 @@ import type { WorkflowSnapshot } from "./workflows";
 
 export type WorktreeView = "goal" | "session" | "all";
 export const worktreeViews = [
-	{ value: "goal", label: "By Goal" },
-	{ value: "session", label: "This session" },
-	{ value: "all", label: "All worktrees" },
+	{ value: "session", label: "This chat" },
+	{ value: "goal", label: "By goal" },
+	{ value: "all", label: "All" },
 ] as const;
 type Tree = WorkflowSnapshot["worktrees"][number];
 export type WorktreeGroup = { key: string; label: string; trees: Tree[] };
@@ -20,7 +20,7 @@ export function worktreeGroups(snapshot: WorkflowSnapshot | undefined, view: Wor
 		const key = view === "goal" ? association ? `goal:${association.id}` : "unassigned" : `repo:${tree.repositoryPath ?? ""}`;
 		let group = groups.get(key);
 		if (!group) {
-			group = { key, label: view === "goal" ? association?.text ?? "Unassigned" : tree.repositoryLabel ?? tree.repositoryPath ?? "", trees: [] };
+			group = { key, label: view === "goal" ? association?.text ?? "No goal" : tree.repositoryLabel ?? tree.repositoryPath ?? "", trees: [] };
 			groups.set(key, group);
 		}
 		group.trees.push(tree);
