@@ -12,10 +12,12 @@ type Props = Pick<PluginAgentPanelProps, "host" | "agentId" | "workspaceId" | "t
 	sessionId: string;
 	runtimeEpoch: string;
 	onOpenAgent?: (agentId: string) => void;
+	/** Leave out the "Agent" heading when the caller already labels this fact. */
+	hideHeading?: boolean;
 };
 
 /** A recorded owner is not exhaustive assignment membership or proof of a running worker. */
-export function WorktreeOwner({ owner, sessionId, runtimeEpoch, onOpenAgent, ...props }: Props) {
+export function WorktreeOwner({ owner, sessionId, runtimeEpoch, onOpenAgent, hideHeading = false, ...props }: Props) {
 	const status = useRpc(harnessStatusRpc), list = useRpc(harnessSubagentsListRpc), route = useRpc(harnessSubagentRouteRpc);
 	const [pending, setPending] = useState(false), [error, setError] = useState<string>();
 	const mounted = useRef(true), current = useRef("");
@@ -68,7 +70,7 @@ export function WorktreeOwner({ owner, sessionId, runtimeEpoch, onOpenAgent, ...
 		} finally { if (mounted.current) setPending(false); }
 	}
 	return <View style={{ gap: 4 }}>
-		<Text accessibilityRole="header" style={{ color: colors.foregroundMuted, fontSize: 12 }}>Agent</Text>
+		{hideHeading ? null : <Text accessibilityRole="header" style={{ color: colors.foregroundMuted, fontSize: 12 }}>Agent</Text>}
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
 			{state && ["starting", "launching", "pending", "running"].includes(state)
 				? <View accessibilityLabel="Running"><WorkStatusRing attention={false} foreground={colors.foreground} platform={props.layout.platform} /></View>
