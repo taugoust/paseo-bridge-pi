@@ -66,9 +66,16 @@ const editRevision = (goal: Ticket | undefined, limitsOnly: boolean) => limitsOn
 function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, onCancel, onSubmit }: {
   colors: PresentationColors; draftKey: string; goal?: Ticket; locked: boolean; limitsOnly?: boolean;
   limits: Props["limits"];
-  onCancel?: () => void; onSubmit(objective: string, tokenBudget: number | undefined, openedRevision: number | undefined, continuationLimits: { automaticTurns: number | null; noProgressTurns: number | null }): Promise<boolean>;
+  onCancel?: () => void; onSubmit(objective: string, tokenBudget: number | undefined, openedRevision: number | undefined, continuationLimits: { automaticTurns: number | null; noProgressTurns: number | null }, tasks: string[]): Promise<boolean>;
 }) {
   const { t } = useGoalText();
+  const [tasks, setTasks] = useState<string[]>([]);
+  const [taskDraft, setTaskDraft] = useState("");
+  const addDraft = () => {
+    const text = taskDraft.trim();
+    if (!text || tasks.includes(text) || tasks.length >= 50) return;
+    setTasks([...tasks, text]); setTaskDraft("");
+  };
   const [openedRevision] = useState(() => {
     if (!draftRevisions.has(draftKey)) draftRevisions.set(draftKey, editRevision(goal, limitsOnly));
     return draftRevisions.get(draftKey);
@@ -95,6 +102,22 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
         multiline maxLength={4000} editable={!locked} style={[input, { minHeight: 144, textAlignVertical: "top" }]} />
       {state.objectiveError ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{t(state.objectiveError)}</Metadata> : null}
     </View> : null}
+    {!goal && !limitsOnly ? <View style={{ gap: 8 }}>
+      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{t("Tasks")}</Text>
+      <Metadata colors={colors}>{t("Optional. The checklist the goal should cover. More can be added later.")}</Metadata>
+      {tasks.map((task, index) => <View key={task} style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <Icon name="Circle" size={14} color={colors.foregroundMuted} />
+        <Text style={{ flex: 1, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{task}</Text>
+        <NativeButton colors={colors} label="Remove" onPress={() => setTasks(tasks.filter((_, i) => i !== index))}
+          style={{ backgroundColor: "transparent", borderColor: "transparent", paddingVertical: 2, paddingHorizontal: 6 }} />
+      </View>)}
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <TextInput accessibilityLabel={t("New task")} placeholder={t("Add a task and press Enter")} placeholderTextColor={colors.foregroundMuted}
+          value={taskDraft} onChangeText={setTaskDraft} onSubmitEditing={addDraft} blurOnSubmit={false} maxLength={503} editable={!locked}
+          style={[input, { flex: 1, paddingVertical: 8 }]} />
+        <NativeButton colors={colors} label="Add" onPress={addDraft} disabled={locked || !taskDraft.trim() || tasks.includes(taskDraft.trim())} />
+      </View>
+    </View> : null}
     <View style={{ gap: 8, ...(!limitsOnly ? { maxWidth: 400 } : {}) }}>
       <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{t("Token budget")}</Text>
       <TextInput accessibilityLabel={t("Goal token budget")} placeholder={t("Unlimited")} placeholderTextColor={colors.foregroundMuted}
@@ -114,7 +137,7 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
     {stale ? <Metadata colors={colors} alert style={{ color: colors.statusWarning }}>{t("This goal changed while you were editing. Cancel and reopen it to review the latest version.")}</Metadata> : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       <NativeButton colors={colors} primary label={goal ? "Save changes" : "Create"} disabled={locked || stale || !state.canSubmit}
-        onPress={() => { if (locked || stale || !state.canSubmit) return; void onSubmit(state.objective.trim(), state.tokenBudget, openedRevision, state.continuationLimits).then(ok => { if (ok) { form.setObjective(""); form.setBudget(""); close(false); } }); }} style={{ minHeight: 44 }} />
+        onPress={() => { if (locked || stale || !state.canSubmit) return; void onSubmit(state.objective.trim(), state.tokenBudget, openedRevision, state.continuationLimits, tasks).then(ok => { if (ok) { form.setObjective(""); form.setBudget(""); setTasks([]); close(false); } }); }} style={{ minHeight: 44 }} />
       {onCancel ? <NativeButton colors={colors} label="Cancel" onPress={() => close()} disabled={locked} style={{ minHeight: 44, backgroundColor: "transparent" }} /> : null}
     </View>
   </View>;
@@ -199,7 +222,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
     {allEntries.length ? back : null}
     <GoalForm key={`${identity}/create`} draftKey={`${identity}/create`} colors={colors} locked={disabled} limits={limits}
       onCancel={() => select(null)}
-      onSubmit={async (objective, tokenBudget, _revision, continuationLimits) => {
+      onSubmit={async (objective, tokenBudget, _revision, continuationLimits, tasks) => {
         const known = new Set(registry.entries.map(entry => entry.id));
         const result = await post({ operation: "start", action: "goals.create", expectedGoalId: null,
           objective, continuationLimits, ...(tokenBudget === undefined ? {} : { tokenBudget }) });
@@ -208,8 +231,15 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
           // Only auto-select an unambiguous new identity, never the last row
           // or an objective match among several independently-created goals.
           const created = result.snapshot.delegatedGoals?.entries.filter(entry => !known.has(entry.id)) ?? [];
-          if (created.length === 1 && created[0].text === objective) select(created[0].id);
-          else { select(null); setSelectionReview(true); }
+          if (created.length === 1 && created[0].text === objective) {
+            let entry: DelegatedGoal | undefined = created[0];
+            for (const text of tasks) {
+              if (!entry) break;
+              const added = await post({ operation: "start", action: "goals.add_task", expectedGoalId: entry.id, expectedEntryRevision: entry.revision, text });
+              entry = added ? added.snapshot.delegatedGoals?.entries.find(item => item.id === created[0].id) : undefined;
+            }
+            select(created[0].id);
+          } else { select(null); setSelectionReview(true); }
         }
         return !!result;
       }} />
@@ -321,6 +351,10 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
         <Icon name="Plus" size={14} color={colors.foregroundMuted} />
         <Metadata colors={colors}>{t(taskCapacity ? "50-task limit reached" : "Add task")}</Metadata>
       </PressableRow> : null}
+      {!goal.assigned && goal.status === "active" ? <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <Icon name="Plus" size={14} color={colors.foregroundMuted} />
+        <Metadata colors={colors}>{t("Pause the goal to add tasks")}</Metadata>
+      </View> : null}
       {addingTask && !goal.assigned ? <View style={{ gap: 8, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
         <TextInput accessibilityLabel={t("Subtask")} value={taskText} onChangeText={setTaskText} editable={!disabled && goal.status !== "active" && !terminal(goal)} maxLength={503} placeholder={t("Describe a task")} placeholderTextColor={colors.foregroundMuted}
           autoFocus style={{ minHeight: 40, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 }} />
