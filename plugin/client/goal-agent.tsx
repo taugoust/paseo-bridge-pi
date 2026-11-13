@@ -8,6 +8,7 @@ import { harnessStatusRpc, harnessSubagentsListRpc, harnessSubagentRouteRpc } fr
 import { recordedAgentDisplayName, type WorktreeAgentEvidence } from "../shared/worktree-agent";
 import { goalAgentRoute, goalAgentEvidence } from "../shared/goal-agent";
 import { PressableRow, goalWorkingColor } from "./goal-ticket-ui";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { DelegatedGoal } from "./delegated-goals";
 import { useGoalText } from "./goal-language";
 
@@ -61,17 +62,13 @@ export function GoalAgent({ child, sessionId, runtimeEpoch, onOpenAgent, ...prop
   const observed = evidence?.item;
   const state = observed?.reaped && !["completed", "failed", "cancelled", "lost", "reaped"].includes(observed.status) ? undefined : observed?.status;
   const label = t(state ? ({ running: "Running", completed: "Completed", failed: "Failed", lost: "Lost", cancelled: "Stopped" }[state] ?? state) : "Status unknown");
-  const rowStyle = { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 3, paddingHorizontal: 6, marginHorizontal: -6, borderRadius: 4, minHeight: 44 } as const;
-  const content = <>
-      <View accessibilityLabel={label} style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: state === "running" ? goalWorkingColor : state === "completed" ? colors.statusSuccess : state === "failed" || state === "lost" ? colors.statusDanger : colors.foregroundMuted }} />
-      <Text numberOfLines={2} style={{ flexShrink: 1, color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{name ?? names.get(identity) ?? t("Goal agent")}</Text>
-      <Text style={{ color: state === "completed" ? colors.statusSuccess : colors.foregroundMuted, fontSize: 12 }}>{state ? label : ""}</Text>
-      <View style={{ flex: 1 }} />
-      {request && onOpenAgent ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, fontWeight: "500" }}>{t(pending ? "Opening…" : "Open chat")}</Text> : null}
-    </>;
-  return <View style={{ gap: 4 }}>
-    {request && onOpenAgent ? <PressableRow colors={colors} onSurface1 disabled={pending} accessibilityRole="button" accessibilityLabel={t("Open chat")} onPress={() => void open()} style={rowStyle}>{content}</PressableRow>
-      : <View style={rowStyle}>{content}</View>}
+  if (!request || !onOpenAgent) return error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{t(error)}</Text> : null;
+  return <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <PressableRow colors={colors} disabled={pending} accessibilityRole="button" accessibilityLabel={t("Open coordinator chat")} onPress={() => void open()}
+      style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 2, paddingHorizontal: 6, borderRadius: 4 }}>
+      <Text style={{ color: goalWorkingColor, fontSize: 12, lineHeight: 18 }}>{t(pending ? "Opening…" : "Open chat")}</Text>
+      <Icon name="ArrowUpRight" size={12} color={goalWorkingColor} />
+    </PressableRow>
     {error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{t(error)}</Text> : null}
   </View>;
 }

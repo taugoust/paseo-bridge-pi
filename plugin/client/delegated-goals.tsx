@@ -14,7 +14,7 @@ import { GoalRecordedDetails } from "./goal-recorded-details";
 import { GoalPlanning } from "./goal-planning";
 import type { z } from "zod";
 import type { delegatedGoalEntrySchema, workflowSnapshotSchema } from "../shared/workflows";
-import { GoalMergeGate, GoalPullRequests } from "./goal-prs";
+import { GoalPullRequests } from "./goal-prs";
 
 /** The parent owns records; only the linked child owns execution. */
 export type DelegatedGoal = z.infer<typeof delegatedGoalEntrySchema>;
@@ -284,6 +284,8 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   </View>;
 
   // The goal page: one plain document at full width.
+  // Once a goal is finished, tasks it didn't complete are no longer in progress or blocked.
+  const tasks = terminal(goal) ? goal.tasks.map(task => task.status === "completed" ? task : { ...task, status: "pending" as const }) : goal.tasks;
   const pendingQuestions = goal.story?.questions?.filter(question => question.status === "pending").length ?? 0;
   const story = [...(goal.story?.timeline ?? []), ...(goal.story?.activity ?? [])].sort((a, b) => a.at - b.at);
   const owner = isCurrentSession(goal) ? t("This chat") : goal.child ? [t("Coordinator"), goal.child.model].filter(Boolean).join(" · ") : t("Saved");
@@ -299,13 +301,13 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <StatusBadge colors={colors} status={goal.status} waiting={goal.waiting} observation={goal.assigned ? undefined : goal.observation} />
         <Metadata colors={colors}>{owner}{goal.assigned && goal.endedAt ? ` · ${time(goal.endedAt)}` : ""}</Metadata>
+        {goal.assigned ? null : renderAgent?.(goal)}
       </View>
       {goal.text.trim() !== goal.text.split("\n")[0].trim() ? <Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.text}</Text> : null}
       {goal.waiting ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.waiting}</Text> : null}
-      {goal.assigned ? null : renderAgent?.(goal)}
     </View>
     <View style={{ flexDirection: narrow ? "column" : "row", alignItems: narrow ? "stretch" : "center", gap: 12 }}>
-      <View style={{ flex: narrow ? undefined : 1, minWidth: 0 }}><TaskBar colors={colors} tasks={goal.tasks} /></View>
+      <View style={{ flex: narrow ? undefined : 1, minWidth: 0 }}><TaskBar colors={colors} tasks={tasks} /></View>
       {actions}
     </View>
     {moreOpen && !goal.assigned && !terminal(goal) ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
@@ -333,7 +335,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
         if (ok) setEditingLimits(false); return ok;
       }} /> : null}
     <View>
-      {goal.tasks.length ? (expanded[goal.id] ? goal.tasks : goal.tasks.slice(0, 8)).map((task, index) => <View key={task.id ?? index} accessible accessibilityLabel={`${task.text}: ${t(task.status.replaceAll("_", " "))}`}
+      {tasks.length ? (expanded[goal.id] ? tasks : tasks.slice(0, 8)).map((task, index) => <View key={task.id ?? index} accessible accessibilityLabel={`${task.text}: ${t(task.status.replaceAll("_", " "))}`}
         style={{ flexDirection: "row", gap: 10, alignItems: "flex-start", paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
         <View style={{ paddingTop: 3 }}><Icon name={task.status === "completed" ? "CircleCheck" : task.status === "blocked" ? "Ban" : task.status === "in_progress" ? "CircleDot" : "Circle"} size={14}
           color={task.status === "completed" ? colors.statusSuccess : task.status === "blocked" ? colors.statusDanger : task.status === "in_progress" ? goalWorkingColor : colors.foregroundMuted} /></View>
@@ -366,8 +368,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       </View> : null}
     </View>
     <GoalPullRequests goal={goal} colors={colors} />
-    <GoalMergeGate goal={goal} colors={colors} />
-    {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Summary")}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
+    {goal.summary && goal.status !== "cleared" ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Summary")}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{t(readableSummary(goal.summary))}</Text></View> : null}
     <View style={{ gap: 12 }}>
       {section("activity", "Activity", story.length, <StoryLog key={`${identity}/${goal.id}/story`} identity={`${identity}/${goal.id}/story`} colors={colors} entries={story}
         truncated={goal.story?.coverage?.timelineTruncated || goal.story?.coverage?.activityTruncated} />)}
@@ -404,7 +405,8 @@ function GoalList({ colors, entries, onSelect }: { colors: PresentationColors; e
     {entries.map((goal, index) => {
       const done = goal.tasks.filter(task => task.status === "completed").length;
       const pr = goal.prs?.find(item => item.state === "open") ?? goal.prs?.[0];
-      const pending = goal.story?.questions?.some(question => question.status === "pending");
+      // Only a running goal can receive an answer; a stopped one keeps its question readable on the page.
+      const pending = goal.status === "active" && goal.story?.questions?.some(question => question.status === "pending");
       const state = pending ? t("Waiting for your answer") : goal.status === "active" && goal.waiting ? t("Waiting")
         : isCurrentSession(goal) ? t("This chat") : goal.status === "active" && goal.child ? t("Coordinator") : t(recordedGoalStatus(goal));
       const detail = [state, goal.tasks.length ? t("{{done}} of {{total}} tasks", { done, total: goal.tasks.length }) : "",
@@ -436,4 +438,11 @@ function limitSummary(goal: DelegatedGoal & { assigned?: boolean; effectiveLimit
     noProgress !== null ? `${goal.noProgressTurns ?? 0} / ${noProgress} ${t("without progress")}` : "",
   ].filter(Boolean);
   return parts.length ? parts.join(" · ") : t("No limits set");
+}
+
+/** Messages the harness records about a coordinator, in words a reader understands. Anything
+ * else is the coordinator's own summary and is shown as written. */
+function readableSummary(summary: string): string {
+  if (/child execution exited; explicit Resume is required/i.test(summary)) return "The coordinator stopped. Resume to continue.";
+  return summary;
 }
