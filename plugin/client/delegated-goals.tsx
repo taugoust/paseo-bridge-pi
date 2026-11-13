@@ -173,10 +173,13 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       ...(name === "limits" ? {} : { expectedEntryRevision: goal?.revision }), ...fields }));
   }
   const button = (label: string, onPress: () => void, isDisabled = disabled) => <NativeButton colors={colors} danger={label === "Clear goal"} primary={label === "Start" || label === "Resume"} label={label} onPress={onPress} disabled={isDisabled} style={{ minHeight: 44, alignSelf: "flex-start", ...(!["Start", "Resume", "Clear goal"].includes(label) ? { backgroundColor: "transparent" } : {}) }} />;
-  if (!allEntries.length && selection !== "new") return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0 }}>
+  // No current goals: explain goals and offer one button. Finished goals stay one click away.
+  if (!history && !entries.length && selection !== "new") return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0 }}>
     <WorkEmpty colors={colors} icon="Target" title={t("No goals yet")}
       hint={t("A goal is an outcome with a checklist. Save one now and start it when you're ready.")}>
       <NativeButton colors={colors} primary label={t("New goal")} onPress={() => { setHistory(false); select("new"); }} disabled={locked} />
+      {allEntries.length ? <NativeButton colors={colors} label="Goal history" onPress={() => { setHistory(true); select(null); }}
+        style={{ backgroundColor: "transparent", borderColor: "transparent", paddingVertical: 4 }} /> : null}
     </WorkEmpty>
   </View>;
   return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, minHeight: 480 }}>
