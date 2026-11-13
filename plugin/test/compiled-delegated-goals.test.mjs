@@ -442,7 +442,7 @@ test('a goal shows the pull requests its coordinator reported',()=>{
  const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
  let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);
  const texts=JSON.stringify(nodes);
- for(const expected of ['Pull requests','Add the widget','Fix the docs','https://github.com/o/r/pull/5'])assert.ok(texts.includes(expected),expected);
+ for(const expected of ['Pull requests','Add the widget','Fix the docs'])assert.ok(texts.includes(expected),expected);
  assert.match(texts,/Merged · /);assert.match(texts,/"CI failed · /);assert.doesNotMatch(texts,/Open · /);
  assert.equal(nodes.filter(node=>node.type==='Pressable'&&node.props.accessibilityLabel==='Open PR').length,2);
  const valid={...entry('22222222-2222-4222-8222-222222222222'),prs:g.prs};

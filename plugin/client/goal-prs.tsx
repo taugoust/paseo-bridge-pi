@@ -41,7 +41,6 @@ export function GoalPullRequests({ goal, colors }: { goal: DelegatedGoal; colors
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text selectable style={{ color: colors.foreground, fontSize: 13 }}>{pr.title ?? pr.ref}</Text>
           <Metadata colors={colors} style={{ color: stateColor(pr, colors) }}>{status}</Metadata>
-          <Metadata colors={colors} selectable>{pr.url}</Metadata>
         </View>
         <GoalButton colors={colors} label="Open PR" onPress={() => open(pr.url)} />
       </View>;
