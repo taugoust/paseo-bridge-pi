@@ -1,10 +1,11 @@
 import { useState, useSyncExternalStore, type ReactNode } from "react";
-import { GoalTicketRow, PressableRow, StatusBadge, TaskBar, TabStrip, StoryLog, goalWorkingColor, type StoryTab } from "./goal-ticket-ui";
-import { WorkEmpty } from "./work-layout";
-import { Text, View } from "react-native";
+import { PressableRow, StatusBadge, TaskBar, StoryLog, goalWorkingColor, recordedGoalStatus } from "./goal-ticket-ui";
+import { WorkStatusRing } from "./work-status-ring";
+import { CompletedHeading, WorkEmpty } from "./work-layout";
+import { Platform, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import { Icon, Modal } from "@getpaseo/plugin/client/ui";
-import { Metadata, type PresentationColors } from "./presentation";
+import { Metadata, NativeRow, type PresentationColors } from "./presentation";
 import { GoalButton as NativeButton, useGoalText } from "./goal-language";
 import { openGoalForm } from "./goal-form";
 import { GoalQuestions, type GoalQuestion } from "./goal-questions";
@@ -135,34 +136,33 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   const [clearRevision, setClearRevision] = useViewState<number | undefined>(identity, "clearRevision", undefined);
   const [addingTask, setAddingTask] = useViewState<boolean>(identity, "addingTask", false);
   const [taskText, setTaskText] = useViewState<string>(identity, "taskText", "");
-  const [tabs, setTabs] = useViewState<Record<string, StoryTab>>(identity, "storyTabs", {});
   const [expanded, setExpanded] = useViewState<Record<string, boolean>>(identity, "checklists", {});
   const [detailsOpen, setDetailsOpen] = useViewState<Record<string, boolean>>(identity, "details", {});
-  const wide = width >= 760;
-  const entries = allEntries.filter(goal => terminal(goal) === history);
-  // Assignment is independent of execution status. Only an authoritative child
-  // link makes an entry delegated; paused children must stay in that list.
+  const narrow = width > 0 && width < 600;
+  const current = allEntries.filter(goal => !terminal(goal));
+  const finished = allEntries.filter(terminal);
+  // The list groups goals by what they are doing, like Jobs and Agents.
+  const waitingGoal = (goal: Ticket) => goal.status === "blocked" || goal.status === "usage_limited" || goal.status === "budget_limited"
+    || (goal.status === "active" && (!!goal.waiting || !!goal.story?.questions?.some(question => question.status === "pending")));
   const groups = [
-    { title: "This chat", entries: entries.filter(isCurrentSession) },
-    { title: "Delegated", entries: entries.filter(entry => !isCurrentSession(entry) && !!entry.child) },
-    { title: "Not started", entries: entries.filter(entry => !isCurrentSession(entry) && !entry.child) },
+    { title: "Running", entries: current.filter(goal => goal.status === "active" && !waitingGoal(goal)) },
+    { title: "Waiting", entries: current.filter(waitingGoal) },
+    { title: "Not started", entries: current.filter(goal => goal.status === "paused") },
   ];
-  const selection = selected === null && wide && !selectionReview ? entries[0]?.id ?? null : selected;
+  const selection = selected;
   const goal = allEntries.find(entry => entry.id === selection);
-  const tab = goal ? tabs[goal.id] ?? "write-up" : "write-up";
   const disabled = locked || busy;
   const budgetExhausted = !!goal && goal.tokenBudget != null && goal.tokensUsed !== undefined && goal.tokensUsed >= goal.tokenBudget;
   const taskDraft = taskText.trim();
   const taskCapacity = !!goal && goal.tasks.length >= 50;
   const duplicateTask = !!goal && !!taskDraft && goal.tasks.some(task => task.text.trim() === taskDraft);
-  const showDetail = wide || selection !== null;
-  const showList = wide || selection === null;
+  const [moreOpen, setMoreOpen] = useState(false);
   function select(id: string | null) {
     if ((editing || editingLimits) && goal) {
       const key = `${identity}/${editingLimits ? "limits" : "edit"}/${goal.id}`;
       drafts.get(key)?.close(); drafts.delete(key); draftRevisions.delete(key);
     }
-    setSelected(id); setSelectionReview(false); setEditing(false); setEditingLimits(false); setClearConfirm(false); setAddingTask(false); setTaskText("");
+    setSelected(id); setSelectionReview(false); setEditing(false); setEditingLimits(false); setClearConfirm(false); setAddingTask(false); setTaskText(""); setMoreOpen(false);
   }
   async function action(name: string, fields: Record<string, unknown> = {}) {
     if ((goal && isCurrentSession(goal)) || disabled || ((name === "start" || name === "resume") && (!executionAvailable || budgetExhausted))) return false;
@@ -172,162 +172,221 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
     return !!(await post({ operation: "start", action: `goals.${name}`, expectedGoalId: goal?.id ?? null,
       ...(name === "limits" ? {} : { expectedEntryRevision: goal?.revision }), ...fields }));
   }
-  const button = (label: string, onPress: () => void, isDisabled = disabled) => <NativeButton colors={colors} danger={label === "Clear goal"} primary={label === "Start" || label === "Resume"} label={label} onPress={onPress} disabled={isDisabled} style={{ minHeight: 44, alignSelf: "flex-start", ...(!["Start", "Resume", "Clear goal"].includes(label) ? { backgroundColor: "transparent" } : {}) }} />;
-  // No current goals: explain goals and offer one button. Finished goals stay one click away.
-  if (!history && !entries.length && selection !== "new") return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0 }}>
-    <WorkEmpty colors={colors} icon="Target" title={t("No goals yet")}
-      hint={t("A goal is an outcome with a checklist. Save one now and start it when you're ready.")}>
-      <NativeButton colors={colors} primary label={t("New goal")} onPress={() => { setHistory(false); select("new"); }} disabled={locked} />
-      {allEntries.length ? <NativeButton colors={colors} label="Goal history" onPress={() => { setHistory(true); select(null); }}
-        style={{ backgroundColor: "transparent", borderColor: "transparent", paddingVertical: 4 }} /> : null}
-    </WorkEmpty>
+  const small = { paddingVertical: 4, paddingHorizontal: 10 } as const;
+  const button = (label: string, onPress: () => void, isDisabled = disabled) => <NativeButton colors={colors} danger={label === "Clear goal"}
+    primary={label === "Start" || label === "Resume"} label={label} onPress={onPress} disabled={isDisabled} style={small} />;
+  const back = <PressableRow colors={colors} accessibilityRole="button" accessibilityLabel={t("Back to goals")} onPress={() => select(null)}
+    style={{ flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", paddingVertical: 4, paddingRight: 8, borderRadius: 6 }}>
+    <Icon name="ChevronLeft" size={14} color={colors.foregroundMuted} />
+    <Metadata colors={colors}>{t("Goals")}</Metadata>
+  </PressableRow>;
+  const section = (key: string, title: string, count: number | undefined, children: ReactNode, defaultOpen = false) => {
+    const id = `${goal?.id}/${key}`, open = detailsOpen[id] ?? defaultOpen;
+    return <View style={{ gap: 12, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 12 }}>
+      <PressableRow colors={colors} accessibilityRole="button" accessibilityState={{ expanded: open }} aria-expanded={open}
+        onPress={() => setDetailsOpen({ ...detailsOpen, [id]: !open })}
+        style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4, borderRadius: 6 }}>
+        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={14} color={colors.foregroundMuted} />
+        <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t(title)}</Text>
+        {count !== undefined ? <Metadata colors={colors}>{count}</Metadata> : null}
+      </PressableRow>
+      {open ? <View style={{ gap: 12, paddingLeft: 20 }}>{children}</View> : null}
+    </View>;
+  };
+
+  // A new goal: the form, with a way back.
+  if (selection === "new") return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 16 }}>
+    {allEntries.length ? back : null}
+    <GoalForm key={`${identity}/create`} draftKey={`${identity}/create`} colors={colors} locked={disabled} limits={limits}
+      onCancel={() => select(null)}
+      onSubmit={async (objective, tokenBudget, _revision, continuationLimits) => {
+        const known = new Set(registry.entries.map(entry => entry.id));
+        const result = await post({ operation: "start", action: "goals.create", expectedGoalId: null,
+          objective, continuationLimits, ...(tokenBudget === undefined ? {} : { tokenBudget }) });
+        if (result) {
+          // Another client may create an entry before the refreshed response.
+          // Only auto-select an unambiguous new identity, never the last row
+          // or an objective match among several independently-created goals.
+          const created = result.snapshot.delegatedGoals?.entries.filter(entry => !known.has(entry.id)) ?? [];
+          if (created.length === 1 && created[0].text === objective) select(created[0].id);
+          else { select(null); setSelectionReview(true); }
+        }
+        return !!result;
+      }} />
   </View>;
-  return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, minHeight: 480 }}>
-    <View style={{ flexDirection: wide ? "row" : "column", minWidth: 0, alignItems: "stretch" }}>
-      {showList ? <View style={{ width: wide ? 320 : "100%", flexShrink: 0, padding: 16, gap: 16,
-        ...(wide ? { borderRightWidth: 1, borderRightColor: colors.border } : {}) }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ color: colors.foreground, fontWeight: "600", fontSize: 14, flex: 1 }}>{t(history ? "Goal history" : "Goals")}</Text>
-          <NativeButton colors={colors} label={history ? "Current goals" : "History"} onPress={() => { setHistory(!history); select(null); }}
-            style={{ backgroundColor: "transparent", borderColor: "transparent", paddingVertical: 4, paddingHorizontal: 8 }} />
-          {history ? null : <NativeButton colors={colors} label="New goal" onPress={() => { setHistory(false); select("new"); }} disabled={locked} style={{ paddingVertical: 4, paddingHorizontal: 10 }} />}
+
+  // The list: goals grouped like Jobs and Agents, finished goals collapsed at the bottom.
+  if (!goal) {
+    if (!current.length && !history) return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0 }}>
+      <WorkEmpty colors={colors} icon="Target" title={t("No goals yet")}
+        hint={t("A goal is an outcome with a checklist. Save one now and start it when you're ready.")}>
+        <NativeButton colors={colors} primary label={t("New goal")} onPress={() => select("new")} disabled={locked} />
+      </WorkEmpty>
+      {finished.length ? <CompletedHeading colors={colors} count={finished.length} open={false} onPress={() => setHistory(true)} /> : null}
+    </View>;
+    const visible = groups.filter(group => group.entries.length);
+    return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 20 }}>
+      {selectionReview ? <Metadata colors={colors}>{t("Goal saved. Select an entry to review.")}</Metadata> : null}
+      {visible.length ? visible.map((group, index) => <View key={group.title} style={{ gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", minHeight: 30 }}>
+          <Metadata colors={colors} style={{ flex: 1, paddingHorizontal: 4 }}>{t(group.title)}</Metadata>
+          {index === 0 ? <NativeButton colors={colors} label="New goal" onPress={() => select("new")} disabled={locked} style={small} /> : null}
         </View>
-        {selectionReview ? <Metadata colors={colors}>{t("Goal saved. Select an entry to review.")}</Metadata> : null}
-        <View style={{ gap: 4 }}>
-          {groups.map((group, index) => group.entries.length ? <View key={index} style={{ gap: 4 }}>
-            {group.title ? <Metadata colors={colors} style={{ paddingTop: 12, paddingHorizontal: 4 }}>{t(group.title)}</Metadata> : null}
-            {group.entries.map(entry => <GoalTicketRow key={entry.reactKey} colors={colors} title={entry.text} goal={entry}
-              selected={selection === entry.id} onPress={() => select(entry.id)} />)}
-          </View> : null)}
-          {!entries.length ? <View style={{ paddingVertical: 24, gap: 8 }}>
-              <Metadata colors={colors}>{t(history ? "No goal history yet" : "No goals yet")}</Metadata>
-              
-            </View> : null}
-        </View>
+        <GoalList colors={colors} entries={group.entries} onSelect={select} />
+      </View>) : <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+        <NativeButton colors={colors} label="New goal" onPress={() => select("new")} disabled={locked} style={small} />
+      </View>}
+      {finished.length ? <View style={{ gap: 8 }}>
+        <CompletedHeading colors={colors} count={finished.length} open={history} onPress={() => setHistory(!history)} />
+        {history ? <GoalList colors={colors} entries={finished} onSelect={select} /> : null}
       </View> : null}
-      {showDetail ? <View style={{ flex: wide ? 1 : undefined, minWidth: 0, padding: wide ? 24 : 16, gap: 20 }}>
-        {!wide ? <View style={{ alignSelf: "flex-start" }}>{button("Back to goals", () => select(null), false)}</View> : null}
-        {selection === "new" ? <GoalForm key={`${identity}/create`} draftKey={`${identity}/create`} colors={colors} locked={disabled} limits={limits}
-          onCancel={allEntries.length ? () => select(null) : undefined}
-          onSubmit={async (objective, tokenBudget, _revision, continuationLimits) => {
-            const known = new Set(registry.entries.map(entry => entry.id));
-            const result = await post({ operation: "start", action: "goals.create", expectedGoalId: null,
-              objective, continuationLimits, ...(tokenBudget === undefined ? {} : { tokenBudget }) });
-            if (result) {
-              // Another client may create an entry before the refreshed response.
-              // Only auto-select an unambiguous new identity, never the last row
-              // or an objective match among several independently-created goals.
-              const created = result.snapshot.delegatedGoals?.entries.filter(entry => !known.has(entry.id)) ?? [];
-              if (created.length === 1 && created[0].text === objective) select(created[0].id);
-              else { select(null); setSelectionReview(true); }
-            }
-            return !!result;
-          }} /> : goal ? editing && !goal.assigned ? <GoalForm key={`${identity}/edit/${goal.id}`} draftKey={`${identity}/edit/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits}
-          onCancel={() => setEditing(false)} onSubmit={async (objective, tokenBudget, openedRevision, continuationLimits) => {
-            const ok = await action("edit", { objective, expectedEntryRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
-            if (ok) setEditing(false); return ok;
-          }} /> : <>
-          {/* Adapted Progress TicketStoryView summary; not a modal or Explorer pane. */}
-          <Text accessibilityRole="header" selectable style={{ color: colors.foreground, fontSize: 18, lineHeight: 26, fontWeight: "600" }}>{goal.text.split("\n")[0]}</Text>
-          <View style={{ gap: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
-              <StatusBadge colors={colors} status={goal.status} waiting={goal.waiting} observation={goal.assigned ? undefined : goal.observation} />
-              <Text style={{ flex: 1, minWidth: 100, color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{goal.tasks.find(task => task.status === "in_progress")?.text ?? ""}</Text>
-            </View>
-            <TaskBar colors={colors} tasks={goal.tasks} />
-            {!goal.assigned && goal.story?.questions?.some(q => q.status === "pending") && tab !== "questions" ? button("View pending questions", () => { setSelected(goal.id); setTabs({ ...tabs, [goal.id]: "questions" }); }, false) : null}
-            {goal.assigned && goal.endedAt ? <Metadata colors={colors}>{time(goal.endedAt)}</Metadata> : null}
-            {goal.waiting ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.waiting}</Text> : null}
-            {goal.assigned ? <View style={{ gap: 4 }}>
-              {goal.waiting ? <Metadata colors={colors}>{goal.waitDeadline === undefined ? t("Wait deadline unavailable in this runtime") : goal.waitDeadline !== null ? t("Safety wake: {{time}} (when idle)",{time:time(goal.waitDeadline)}) : t("Waiting for an external message or explicit resume; no safety deadline")}</Metadata> : null}
-              {goal.lastWake ? <Metadata colors={colors}>{t("Last wake: {{reason}} · {{time}}",{reason:goal.lastWake.reason.replaceAll("_", " "),time:time(goal.lastWake.at)})}</Metadata> : null}
-              {goal.lastTaskUpdateAt != null ? <Metadata colors={colors}>{t("Last checklist change: {{time}}",{time:time(goal.lastTaskUpdateAt)})}</Metadata> : null}
-              {goal.lastBlocker ? <View style={{ gap: 4 }}><Metadata colors={colors}>{t("Recorded blocker: {{reason}}",{reason:goal.lastBlocker.reason})}</Metadata><Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.lastBlocker.evidence}</Text></View> : null}
-            </View> : renderAgent?.(goal)}
-          {!goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {goal.status === "active" ? button("Pause", () => { void action("pause"); }, disabled) : button(goal.child ? "Resume" : "Start", () => { void action(goal.child ? "resume" : "start"); }, disabled || !executionAvailable || budgetExhausted)}
-            {button("Edit", () => { setSelected(goal.id); setEditing(true); }, disabled || goal.status === "active")}
-            {button("Clear", () => { setSelected(goal.id); setClearRevision(goal.revision); setClearConfirm(true); }, disabled || goal.status === "active")}
-          </View> : null}
-          </View>
-          {!goal.assigned && !executionAvailable && !terminal(goal) ? <Metadata colors={colors}>{t("Start and Resume are unavailable in this session")}</Metadata> : !goal.assigned && budgetExhausted && goal.status !== "active" && !terminal(goal) ? <Metadata colors={colors}>{t("Raise or remove the token budget before resuming")}</Metadata> : null}
-          {clearConfirm && !goal.assigned ? <Modal title={t("Clear goal?")} open onOpenChange={setClearConfirm}><Modal.Content><View style={{ gap: 16 }}>
-            <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{goal.text}</Text>
-            <Metadata colors={colors}>{t("Clearing does not mark the goal complete. Its checklist remains in History.")}</Metadata>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              {button("Keep goal", () => setClearConfirm(false), disabled)}
-              {button("Clear goal", () => { void action("clear", { expectedEntryRevision: clearRevision }).then(ok => { if (ok) select(null); }); }, disabled || goal.status === "active" || terminal(goal) || goal.revision !== clearRevision)}
-            </View>
-          </View></Modal.Content></Modal> : null}
-          {editingLimits && !terminal(goal) ? <GoalForm key={`${identity}/limits/${goal.id}`} draftKey={`${identity}/limits/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits} limitsOnly
-            onCancel={() => setEditingLimits(false)} onSubmit={async (_objective, tokenBudget, openedRevision, continuationLimits) => {
-              const ok = goal.assigned ? !!(await post({ operation: "start", action: "goal.limits", expectedGoalId: goal.sourceGoalId,
-                expectedActivationId: goal.activationId, expectedPolicyRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits }))
-                : await action("limits", { expectedPolicyRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
-              if (ok) setEditingLimits(false); return ok;
-            }} /> : null}
-          <View style={{ gap: 12 }}>
-          <TabStrip colors={colors} narrow={!wide} selected={tab} onSelect={next => { setSelected(goal.id); setTabs({ ...tabs, [goal.id]: next }); }} tabs={[
-            { id: "write-up", label: "Write-up", icon: "FileText" },
-            { id: "timeline", label: "Timeline", icon: "History", count: goal.story?.timeline.length },
-            { id: "activity", label: "Activity", icon: "Activity", count: goal.story?.activity.length },
-            { id: "questions", label: "Questions", icon: "MessageCircleQuestion", count: goal.story?.questions?.filter(question => question.status === "pending").length },
-          ]} />
-          {tab === "timeline" ? <StoryLog key={`${identity}/${goal.id}/timeline`} identity={`${identity}/${goal.id}/timeline`} colors={colors} entries={goal.story?.timeline ?? []} truncated={goal.story?.coverage?.timelineTruncated} timeline /> : null}
-          {tab === "activity" ? <StoryLog key={`${identity}/${goal.id}/activity`} identity={`${identity}/${goal.id}/activity`} colors={colors} entries={goal.story?.activity ?? []} truncated={goal.story?.coverage?.activityTruncated} /> : null}
-          {tab === "questions" && goal.assigned ? <Metadata colors={colors}>{t("No recorded questions available for this assigned goal")}</Metadata> : tab === "questions" && !goal.assigned ? <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision} renderAttachments={question=>renderQuestionAttachments?.(goal,question)}
-            disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child || goal.observation?.state === "unavailable"} onAnswer={(question, answer, openedRevision) => action("answer", {
-              expectedEntryRevision: openedRevision, questionId: question.id, questionRevision: question.revision, workerEpoch: question.workerEpoch, answer,
-            })} /> : null}
-          {tab === "questions" && goal.story?.coverage?.questionsTruncated ? <Metadata colors={colors}>{t("Earlier questions omitted")}</Metadata> : null}
-          {tab === "write-up" ? <View style={{ gap: 12, padding: 14, borderRadius: 8, backgroundColor: colors.surface0 }}>
-            {goal.text.trim() !== goal.text.split("\n")[0].trim() ? <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{goal.text}</Text> : null}
-          <View style={{ gap: 12 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500", flex: 1 }}>{t("Checklist")}</Text>
-              <Metadata colors={colors}>{goal.tasks.filter(task => task.status === "completed").length} / {goal.tasks.length}</Metadata>
-            </View>
-            {goal.tasks.length ? (expanded[goal.id] ? goal.tasks : goal.tasks.slice(0, 5)).map((task, index) => <View key={task.id ?? index} accessible accessibilityLabel={`${task.text}: ${t(task.status.replaceAll("_", " "))}`} style={{ flexDirection: "row", gap: 10, alignItems: "flex-start", paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
-              <View style={{ paddingTop: 2 }}><Icon name={task.status === "completed" ? "Check" : task.status === "blocked" ? "Ban" : task.status === "in_progress" ? "CirclePlay" : "Circle"} size={14} color={task.status === "completed" ? colors.statusSuccess : task.status === "blocked" ? colors.statusDanger : task.status === "in_progress" ? goalWorkingColor : colors.foregroundMuted} /></View>
-              <View style={{ flex: 1, minWidth: 0 }}><Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{task.text}</Text></View>
-              {task.status === "blocked" ? <Text style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 19 }}>{t("Blocked")}</Text> : null}
-            </View>) : <Metadata colors={colors}>{t(goal.status === "active" ? "No tasks reported yet" : "No tasks yet")}</Metadata>}
-            {goal.tasks.length > 5 ? button(expanded[goal.id] ? "Show fewer tasks" : t("Show all {{count}} tasks",{count:goal.tasks.length}), () => setExpanded({ ...expanded, [goal.id]: !expanded[goal.id] }), false) : null}
-            {!goal.assigned && !terminal(goal) && goal.status !== "active" ? button(addingTask ? "Cancel task" : "Add task", () => { setSelected(goal.id); setAddingTask(!addingTask); setTaskText(""); }, disabled || (!addingTask && taskCapacity)) : null}
-            {addingTask && !goal.assigned ? <View style={{ gap: 8 }}>
-              <TextInput accessibilityLabel={t("Subtask")} value={taskText} onChangeText={setTaskText} editable={!disabled && goal.status !== "active" && !terminal(goal)} maxLength={503} placeholder={t("Describe a task")} placeholderTextColor={colors.foregroundMuted}
-                style={{ minHeight: 44, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 }} />
-              {taskCapacity ? <Metadata colors={colors}>{t("50-task limit reached")}</Metadata> : duplicateTask ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{t("That task is already in this goal")}</Metadata> : null}
-              {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || taskCapacity || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
-            </View> : null}
-          </View>
-          <GoalPullRequests goal={goal} colors={colors} />
-          <GoalMergeGate goal={goal} colors={colors} />
-          <View style={{ gap: 12 }}>
-            <PressableRow colors={colors} accessibilityRole="button" accessibilityState={{ expanded: !!detailsOpen[goal.id] }} aria-expanded={!!detailsOpen[goal.id]}
-              onPress={() => setDetailsOpen({ ...detailsOpen, [goal.id]: !detailsOpen[goal.id] })}
-              style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, borderRadius: 6 }}>
-              <Icon name={detailsOpen[goal.id] ? "ChevronUp" : "ChevronDown"} size={14} color={colors.foregroundMuted} />
-              <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Details")}</Text>
-            </PressableRow>
-            {detailsOpen[goal.id] ? <View style={{ gap: 16, paddingLeft: 20 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <Metadata colors={colors} style={{ flex: 1 }}>{limitSummary(goal, limits, t)}{!goal.assigned && goal.child?.model ? ` · ${t("Launch model")}: ${goal.child.model}` : ""}</Metadata>
-                {!terminal(goal) ? <NativeButton colors={colors} label="Edit limits" onPress={() => { setSelected(goal.id); setEditingLimits(true); }}
-                  disabled={disabled || editingLimits || !limitsEditable || goal.policyRevision === undefined || (goal.assigned && !goal.activationId)}
-                  style={{ paddingVertical: 4, paddingHorizontal: 10 }} /> : null}
-              </View>
-              {!goal.assigned ? <GoalPlanning key={`${identity}/${goal.id}/planning`} embedded goal={goal} colors={colors} disabled={disabled} available={planningAvailable} post={(name, fields) => action(name, fields)} /> : null}
-              {!goal.assigned ? <GoalRecordedDetails key={`${identity}/${goal.id}`} embedded colors={colors} goal={goal} /> : null}
-              {!goal.assigned ? renderReview?.(goal) : null}
-            </View> : null}
-          </View>
-          {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Summary")}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
-          </View> : null}
-          </View>
-        </> : <Metadata colors={colors}>{t(history && !entries.length ? "No goal history yet" : "Select a goal")}</Metadata>}
+    </View>;
+  }
+
+  // Editing the objective replaces the page with the form.
+  if (editing && !goal.assigned) return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 16 }}>
+    {back}
+    <GoalForm key={`${identity}/edit/${goal.id}`} draftKey={`${identity}/edit/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits}
+      onCancel={() => setEditing(false)} onSubmit={async (objective, tokenBudget, openedRevision, continuationLimits) => {
+        const ok = await action("edit", { objective, expectedEntryRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
+        if (ok) setEditing(false); return ok;
+      }} />
+  </View>;
+
+  // The goal page: one plain document at full width.
+  const pendingQuestions = goal.story?.questions?.filter(question => question.status === "pending").length ?? 0;
+  const story = [...(goal.story?.timeline ?? []), ...(goal.story?.activity ?? [])].sort((a, b) => a.at - b.at);
+  const owner = isCurrentSession(goal) ? t("This chat") : goal.child ? [t("Coordinator"), goal.child.model].filter(Boolean).join(" · ") : t("Saved");
+  const actions = !goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+    {goal.status === "active" ? button("Pause", () => { void action("pause"); })
+      : button(goal.child ? "Resume" : "Start", () => { void action(goal.child ? "resume" : "start"); }, disabled || !executionAvailable || budgetExhausted)}
+    <NativeButton colors={colors} label="···" onPress={() => setMoreOpen(!moreOpen)} style={small} />
+  </View> : null;
+  return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 20 }}>
+    {back}
+    <View style={{ gap: 8 }}>
+      <Text accessibilityRole="header" selectable style={{ color: colors.foreground, fontSize: 20, lineHeight: 28, fontWeight: "600" }}>{goal.text.split("\n")[0]}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <StatusBadge colors={colors} status={goal.status} waiting={goal.waiting} observation={goal.assigned ? undefined : goal.observation} />
+        <Metadata colors={colors}>{owner}{goal.assigned && goal.endedAt ? ` · ${time(goal.endedAt)}` : ""}</Metadata>
+      </View>
+      {goal.text.trim() !== goal.text.split("\n")[0].trim() ? <Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.text}</Text> : null}
+      {goal.waiting ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.waiting}</Text> : null}
+      {goal.assigned ? null : renderAgent?.(goal)}
+    </View>
+    <View style={{ flexDirection: narrow ? "column" : "row", alignItems: narrow ? "stretch" : "center", gap: 12 }}>
+      <View style={{ flex: narrow ? undefined : 1, minWidth: 0 }}><TaskBar colors={colors} tasks={goal.tasks} /></View>
+      {actions}
+    </View>
+    {moreOpen && !goal.assigned && !terminal(goal) ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {button("Edit", () => { setSelected(goal.id); setEditing(true); }, disabled || goal.status === "active")}
+        {button("Clear goal", () => { setSelected(goal.id); setClearRevision(goal.revision); setClearConfirm(true); }, disabled || goal.status === "active")}
+      </View>
+      {renderReview?.(goal)}
+    </View> : null}
+    {!goal.assigned && !executionAvailable && !terminal(goal) ? <Metadata colors={colors}>{t("Start and Resume are unavailable in this session")}</Metadata>
+      : !goal.assigned && budgetExhausted && goal.status !== "active" && !terminal(goal) ? <Metadata colors={colors}>{t("Raise or remove the token budget before resuming")}</Metadata> : null}
+    {clearConfirm && !goal.assigned ? <Modal title={t("Clear goal?")} open onOpenChange={setClearConfirm}><Modal.Content><View style={{ gap: 16 }}>
+      <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{goal.text}</Text>
+      <Metadata colors={colors}>{t("Clearing does not mark the goal complete. Its checklist remains in History.")}</Metadata>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {button("Keep goal", () => setClearConfirm(false))}
+        {button("Clear goal", () => { void action("clear", { expectedEntryRevision: clearRevision }).then(ok => { if (ok) select(null); }); }, disabled || goal.status === "active" || terminal(goal) || goal.revision !== clearRevision)}
+      </View>
+    </View></Modal.Content></Modal> : null}
+    {editingLimits && !terminal(goal) ? <GoalForm key={`${identity}/limits/${goal.id}`} draftKey={`${identity}/limits/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits} limitsOnly
+      onCancel={() => setEditingLimits(false)} onSubmit={async (_objective, tokenBudget, openedRevision, continuationLimits) => {
+        const ok = goal.assigned ? !!(await post({ operation: "start", action: "goal.limits", expectedGoalId: goal.sourceGoalId,
+          expectedActivationId: goal.activationId, expectedPolicyRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits }))
+          : await action("limits", { expectedPolicyRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
+        if (ok) setEditingLimits(false); return ok;
+      }} /> : null}
+    <View>
+      {goal.tasks.length ? (expanded[goal.id] ? goal.tasks : goal.tasks.slice(0, 8)).map((task, index) => <View key={task.id ?? index} accessible accessibilityLabel={`${task.text}: ${t(task.status.replaceAll("_", " "))}`}
+        style={{ flexDirection: "row", gap: 10, alignItems: "flex-start", paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <View style={{ paddingTop: 3 }}><Icon name={task.status === "completed" ? "CircleCheck" : task.status === "blocked" ? "Ban" : task.status === "in_progress" ? "CircleDot" : "Circle"} size={14}
+          color={task.status === "completed" ? colors.statusSuccess : task.status === "blocked" ? colors.statusDanger : task.status === "in_progress" ? goalWorkingColor : colors.foregroundMuted} /></View>
+        <Text selectable style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 20, color: task.status === "completed" ? colors.foregroundMuted : colors.foreground,
+          textDecorationLine: task.status === "completed" ? "line-through" : "none" }}>{task.text}</Text>
+        {task.status === "blocked" ? <Text style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 20 }}>{t("Blocked")}</Text> : null}
+      </View>) : <Metadata colors={colors}>{t(goal.status === "active" ? "No tasks reported yet" : "No tasks yet")}</Metadata>}
+      {goal.tasks.length > 8 ? <PressableRow colors={colors} onPress={() => setExpanded({ ...expanded, [goal.id]: !expanded[goal.id] })}
+        style={{ paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <Metadata colors={colors}>{expanded[goal.id] ? t("Show fewer tasks") : t("Show all {{count}} tasks", { count: goal.tasks.length })}</Metadata>
+      </PressableRow> : null}
+      {!goal.assigned && !terminal(goal) && goal.status !== "active" && !addingTask ? <PressableRow colors={colors} accessibilityRole="button" disabled={disabled || taskCapacity}
+        onPress={() => { setSelected(goal.id); setAddingTask(true); setTaskText(""); }}
+        style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <Icon name="Plus" size={14} color={colors.foregroundMuted} />
+        <Metadata colors={colors}>{t(taskCapacity ? "50-task limit reached" : "Add task")}</Metadata>
+      </PressableRow> : null}
+      {addingTask && !goal.assigned ? <View style={{ gap: 8, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <TextInput accessibilityLabel={t("Subtask")} value={taskText} onChangeText={setTaskText} editable={!disabled && goal.status !== "active" && !terminal(goal)} maxLength={503} placeholder={t("Describe a task")} placeholderTextColor={colors.foregroundMuted}
+          autoFocus style={{ minHeight: 40, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 }} />
+        {duplicateTask ? <Metadata colors={colors} alert style={{ color: colors.statusDanger }}>{t("That task is already in this goal")}</Metadata> : null}
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          {button("Save task", () => { void action("add_task", { text: taskDraft }).then(ok => { if (ok) { setAddingTask(false); setTaskText(""); } }); }, disabled || taskCapacity || goal.status === "active" || terminal(goal) || !taskDraft || duplicateTask)}
+          {button("Cancel", () => { setAddingTask(false); setTaskText(""); }, false)}
+        </View>
       </View> : null}
     </View>
+    <GoalPullRequests goal={goal} colors={colors} />
+    <GoalMergeGate goal={goal} colors={colors} />
+    {goal.summary ? <View style={{ gap: 8 }}><Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Summary")}</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 14, lineHeight: 20 }}>{goal.summary}</Text></View> : null}
+    <View style={{ gap: 12 }}>
+      {section("activity", "Activity", story.length, <StoryLog key={`${identity}/${goal.id}/story`} identity={`${identity}/${goal.id}/story`} colors={colors} entries={story}
+        truncated={goal.story?.coverage?.timelineTruncated || goal.story?.coverage?.activityTruncated} />)}
+      {section("questions", "Questions", pendingQuestions, goal.assigned ? <Metadata colors={colors}>{t("No recorded questions available for this assigned goal")}</Metadata> : <>
+        <GoalQuestions key={`${identity}/${goal.id}`} colors={colors} questions={goal.story?.questions ?? []} identity={`${identity}/${goal.id}`} revision={goal.revision} renderAttachments={question => renderQuestionAttachments?.(goal, question)}
+          disabled={disabled || terminal(goal) || goal.status !== "active" || !goal.child || goal.observation?.state === "unavailable"} onAnswer={(question, answer, openedRevision) => action("answer", {
+            expectedEntryRevision: openedRevision, questionId: question.id, questionRevision: question.revision, workerEpoch: question.workerEpoch, answer,
+          })} />
+        {goal.story?.coverage?.questionsTruncated ? <Metadata colors={colors}>{t("Earlier questions omitted")}</Metadata> : null}
+      </>, pendingQuestions > 0)}
+      {section("details", "Details", undefined, <>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Metadata colors={colors} style={{ flex: 1 }}>{limitSummary(goal, limits, t)}{!goal.assigned && goal.child?.model ? ` · ${t("Launch model")}: ${goal.child.model}` : ""}</Metadata>
+          {!terminal(goal) ? button("Edit limits", () => { setSelected(goal.id); setEditingLimits(true); }, disabled || editingLimits || !limitsEditable || goal.policyRevision === undefined || (goal.assigned && !goal.activationId)) : null}
+        </View>
+        {goal.assigned ? <View style={{ gap: 4 }}>
+          {goal.waiting ? <Metadata colors={colors}>{goal.waitDeadline === undefined ? t("Wait deadline unavailable in this runtime") : goal.waitDeadline !== null ? t("Safety wake: {{time}} (when idle)",{time:time(goal.waitDeadline)}) : t("Waiting for an external message or explicit resume; no safety deadline")}</Metadata> : null}
+          {goal.lastWake ? <Metadata colors={colors}>{t("Last wake: {{reason}} · {{time}}",{reason:goal.lastWake.reason.replaceAll("_", " "),time:time(goal.lastWake.at)})}</Metadata> : null}
+          {goal.lastTaskUpdateAt != null ? <Metadata colors={colors}>{t("Last checklist change: {{time}}",{time:time(goal.lastTaskUpdateAt)})}</Metadata> : null}
+          {goal.lastBlocker ? <View style={{ gap: 4 }}><Metadata colors={colors}>{t("Recorded blocker: {{reason}}",{reason:goal.lastBlocker.reason})}</Metadata><Text selectable style={{ color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>{goal.lastBlocker.evidence}</Text></View> : null}
+        </View> : <>
+          <GoalPlanning key={`${identity}/${goal.id}/planning`} embedded goal={goal} colors={colors} disabled={disabled} available={planningAvailable} post={(name, fields) => action(name, fields)} />
+          <GoalRecordedDetails key={`${identity}/${goal.id}`} embedded colors={colors} goal={goal} />
+        </>}
+      </>)}
+    </View>
+  </View>;
+}
+
+/** Bordered goal rows, the same shape as the Jobs and Agents lists. */
+function GoalList({ colors, entries, onSelect }: { colors: PresentationColors; entries: Ticket[]; onSelect(id: string): void }) {
+  const { t } = useGoalText();
+  return <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1, overflow: "hidden" }}>
+    {entries.map((goal, index) => {
+      const done = goal.tasks.filter(task => task.status === "completed").length;
+      const pr = goal.prs?.find(item => item.state === "open") ?? goal.prs?.[0];
+      const pending = goal.story?.questions?.some(question => question.status === "pending");
+      const state = pending ? t("Waiting for your answer") : goal.status === "active" && goal.waiting ? t("Waiting")
+        : isCurrentSession(goal) ? t("This chat") : goal.status === "active" && goal.child ? t("Coordinator") : t(recordedGoalStatus(goal));
+      const detail = [state, goal.tasks.length ? t("{{done}} of {{total}} tasks", { done, total: goal.tasks.length }) : "",
+        pr ? `PR ${pr.ref.split("#").pop() ? `#${pr.ref.split("#").pop()}` : ""} ${pr.state === "open" ? (pr.ci === "pending" ? t("CI running") : pr.ci === "failed" ? t("CI failed") : t("open")) : t(pr.state)}` : ""]
+        .filter(Boolean).join(" · ");
+      const leading = goal.status === "active" && !pending && !goal.waiting
+        ? <WorkStatusRing attention={false} foreground={colors.foreground} platform={Platform.OS} />
+        : <Icon size={14} name={pending ? "CircleHelp" : goal.status === "complete" ? "CircleCheck" : goal.status === "cleared" ? "CircleX"
+          : goal.status === "active" ? "Clock" : goal.status === "paused" ? "CirclePause" : "Ban"}
+          color={pending ? "#db932e" : goal.status === "complete" ? colors.statusSuccess : goal.status === "active" ? goalWorkingColor
+            : goal.status === "paused" || goal.status === "cleared" ? colors.foregroundMuted : colors.statusDanger} />;
+      return <View key={goal.reactKey} style={index ? { borderTopWidth: 1, borderTopColor: colors.border } : undefined}>
+        <NativeRow colors={colors} title={goal.text.split("\n")[0]} detail={detail} leading={leading}
+          trailing={<Icon name="ChevronRight" size={14} color={colors.foregroundMuted} />} onPress={() => onSelect(goal.id)} />
+      </View>;
+    })}
   </View>;
 }
 
