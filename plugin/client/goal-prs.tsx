@@ -34,8 +34,9 @@ export function GoalPullRequests({ goal, colors }: { goal: DelegatedGoal; colors
   return <View style={{ gap: 8 }}>
     <Text style={{ color: colors.foreground, fontWeight: "500", fontSize: 14 }}>{t("Pull requests")}</Text>
     {prs.map(pr => {
-      const status = [t(STATE_LABEL[pr.state]), pr.state === "open" && pr.ci ? t(CI_LABEL[pr.ci]) : undefined, time(pr.checkedAt)]
-        .filter(Boolean).join(" · ");
+      // An open PR is described by its CI. Merged and closed say so instead.
+      const state = pr.state === "open" && pr.ci ? t(CI_LABEL[pr.ci]) : t(STATE_LABEL[pr.state]);
+      const status = `${state} · ${time(pr.checkedAt)}`;
       return <View key={pr.ref} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text selectable style={{ color: colors.foreground, fontSize: 13 }}>{pr.title ?? pr.ref}</Text>
