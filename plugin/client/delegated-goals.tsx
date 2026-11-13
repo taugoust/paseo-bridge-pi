@@ -289,7 +289,16 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   const pendingQuestions = goal.story?.questions?.filter(question => question.status === "pending").length ?? 0;
   const story = [...(goal.story?.timeline ?? []), ...(goal.story?.activity ?? [])].sort((a, b) => a.at - b.at);
   const owner = isCurrentSession(goal) ? t("This chat") : goal.child ? [t("Coordinator"), goal.child.model].filter(Boolean).join(" · ") : t("Saved");
-  const actions = !goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+  // This chat's own goal: Pi pauses or resumes it, and asks for confirmation before resuming.
+  const chatGoalAction = async (name: "pause" | "resume") => {
+    if (disabled || !goal.assigned) return;
+    await post({ operation: "start", action: `goal.${name}`, expectedGoalId: goal.sourceGoalId });
+  };
+  // Older sessions can't run these actions, so their goals stay read-only.
+  const actions = goal.assigned && !terminal(goal) && !locked ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+    {goal.status === "active" ? button("Pause", () => { void chatGoalAction("pause"); })
+      : button("Resume", () => { void chatGoalAction("resume"); })}
+  </View> : !goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
     {goal.status === "active" ? button("Pause", () => { void action("pause"); })
       : button(goal.child ? "Resume" : "Start", () => { void action(goal.child ? "resume" : "start"); }, disabled || !executionAvailable || budgetExhausted)}
     <NativeButton colors={colors} label="···" onPress={() => setMoreOpen(!moreOpen)} style={small} />
