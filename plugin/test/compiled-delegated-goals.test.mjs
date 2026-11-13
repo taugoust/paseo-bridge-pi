@@ -17,6 +17,7 @@ await writeFile(resolve(fixture,'index.client.tsx'),'export { DelegatedGoals, sa
 await writeFile(resolve(fixture,'index.server.ts'),'import { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema } from "./shared/workflows"; export default function schemas() { return { goalStorySchema, workflowRequestSchema, goalReviewReferenceSchema, delegatedGoalEntrySchema }; }');
 const {clientBundle,serverBundle}=await compilePlugin({client:resolve(fixture,'index.client.tsx'),server:resolve(fixture,'index.server.ts')});
 const schemas=(0,eval)(serverBundle)(name=>name==='@getpaseo/plugin'?{defineRpc:value=>value}:require(name)).default();
+const copied=[],openedUrls=[];
 const colors={foreground:'#eee',foregroundMuted:'#999',surface1:'#222',surface2:'#333',border:'#444',accent:'#eee',accentForeground:'#111',statusWarning:'#fa0',statusDanger:'#f66',statusSuccess:'#63b887'};
 function harness(options={}) {
  const states=new Map();let context,locale=options.locale;
@@ -32,8 +33,8 @@ function harness(options={}) {
   };
   if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};
   if(name==='react-native')return {View:'View',Text:'Text',Pressable:'Pressable',Image:'Image',Platform:{OS:'web'},Animated:{Value:class{interpolate(){return 0;}},View:'AnimatedView'},Easing:{linear:value=>value},AccessibilityInfo:{isReduceMotionEnabled:async()=>true,addEventListener:()=>({remove(){}})}};
-  if(name==='@getpaseo/plugin/client')return {openExternalUrl:async()=>{},...translationApi};
-  if(name==='@getpaseo/plugin/client/react-native')return {TextInput:'TextInput',ScrollView:'ScrollView'};
+  if(name==='@getpaseo/plugin/client')return {openExternalUrl:async url=>{openedUrls.push(url);},...translationApi};
+  if(name==='@getpaseo/plugin/client/react-native')return {TextInput:'TextInput',ScrollView:'ScrollView',Icon:'Icon',copyText:async text=>{copied.push(text);}};
   if(name==='@getpaseo/plugin/client/ui')return {Icon:'Icon',SettingsSection:'SettingsSection',SettingsCard:'SettingsCard',SettingsAction:'SettingsAction',Modal:Object.assign(props=>jsx('Modal',props),{Content:'ModalContent'})};
   return require(name);
  };
@@ -536,7 +537,7 @@ test('limit RPC schemas require exact policy routing and explicit nullable limit
  assert.equal(schemas.workflowRequestSchema.safeParse({...delegated,action:'goals.limits',expectedEntryRevision:2}).success,false);
 });
 
-test('a goal shows the pull requests its coordinator reported',()=>{
+test('a goal shows the pull requests its coordinator reported',async()=>{
  const h=harness(),g=entry('prs','active');
  g.prs=[
   {ref:'github.com/o/r#5',url:'https://github.com/o/r/pull/5',title:'Add the widget',branch:'b5',state:'merged',ci:'green',checkedAt:1},
@@ -545,19 +546,35 @@ test('a goal shows the pull requests its coordinator reported',()=>{
  const props={registry:{version:1,revision:1,entries:[g]},colors,identity:g.id,locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
  let nodes=h.draw(props);button(nodes,g.text).props.onPress();nodes=h.draw(props);
  const texts=JSON.stringify(nodes);
- for(const expected of ['Pull requests','Add the widget','Fix the docs'])assert.ok(texts.includes(expected),expected);
- assert.match(texts,/Merged · /);assert.match(texts,/"CI failed · /);assert.doesNotMatch(texts,/Open · /);
- assert.equal(nodes.filter(node=>node.type==='Pressable'&&node.props.accessibilityLabel==='Open PR').length,2);
+ assert.ok(texts.includes('Pull requests'));
+ const prRow=(nodes,title)=>nodes.find(node=>node.type==='Pressable'&&node.props.accessibilityLabel?.startsWith(`${title}, `));
+ const icon=row=>JSON.stringify(row.props.children).match(/"name":"(Circle\w*|Clock)"/)?.[1];
+ assert.equal(prRow(nodes,'Add the widget').props.accessibilityLabel,'Add the widget, Merged');
+ assert.equal(prRow(nodes,'Fix the docs').props.accessibilityLabel,'Fix the docs, Open · CI failed','an open PR says what it waits on in plain words');
+ assert.match(texts,/r#5 · Merged · /);assert.match(texts,/r#7 · Open · CI failed · /);
+ assert.equal(icon(prRow(nodes,'Add the widget')),'CircleCheck');assert.equal(icon(prRow(nodes,'Fix the docs')),'Circle','no condition yet: no verdict is invented');
+ prRow(nodes,'Fix the docs').props.onPress();assert.deepEqual(openedUrls.splice(0),['https://gitlab.com/g/r/-/merge_requests/7'],'a PR row opens exactly its own URL');
  assert.ok(!texts.includes('Completion conditions'),'no gate section before the gate has run');
+ assert.ok(!texts.includes('Copy command'),'no command to copy before the gate has run');
  g.checks=[{command:'forge-pr -R github.com/o/r check 5 --ci-green',verdict:'ok',at:1},{command:'forge-pr -R gitlab.com/g/r check 7 --ci-green',verdict:'failed',detail:'CI failed',at:2}];
- nodes=h.draw(props);const gate=JSON.stringify(nodes);
- assert.ok(gate.includes('Completion conditions'));for(const word of ['gitlab.com/g/r','--ci-green'])assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children===word),word);assert.equal(nodes.filter(n=>n.props.accessibilityLabel==='Copy command').length,2);assert.ok(gate.includes('"accessibilityLabel":"passed"'));assert.ok(gate.includes('"accessibilityLabel":"failed"'));
+ nodes=h.draw(props);let gate=JSON.stringify(nodes);
+ assert.ok(!gate.includes('Completion conditions'),'conditions that belong to a PR sit on its row');
+ assert.equal(icon(prRow(nodes,'Add the widget')),'CircleCheck');assert.equal(icon(prRow(nodes,'Fix the docs')),'CircleX','the failed condition marks its PR');
+ const copy=nodes.filter(n=>n.type==='Pressable'&&n.props.accessibilityLabel?.startsWith('Copy command: '));
+ assert.deepEqual(copy.map(n=>n.props.accessibilityLabel.slice('Copy command: '.length)),g.checks.map(check=>check.command),'each PR copies the exact command that checks it');
+ copy[1].props.onPress();await tick();assert.deepEqual(copied.splice(0),[g.checks[1].command]);
+ g.checks.push({command:'make release-check',verdict:'pending',at:3});
+ nodes=h.draw(props);gate=JSON.stringify(nodes);
+ assert.ok(gate.includes('Completion conditions'),'a condition without a PR keeps its own list');
+ assert.ok(nodes.some(n=>n.type==='Text'&&n.props.children==='release-check')||gate.includes('make release-check'));
+ assert.ok(gate.includes('"accessibilityLabel":"running"'),'its verdict is shown');
+ g.checks.pop();
  const valid={...entry('22222222-2222-4222-8222-222222222222'),prs:g.prs,checks:g.checks};
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse(valid).success,true);
  assert.equal(schemas.delegatedGoalEntrySchema.safeParse({...valid,prs:[{...g.prs[0],state:'draft'}]}).success,false);
 });
 
-test('the current-session goal shows its pull requests and completion conditions too',()=>{
+test('the current-session goal shows its pull requests and their completion conditions too',()=>{
  const h=harness();
  const assigned={id:'33333333-3333-4333-8333-333333333333',text:'Current test goal',status:'paused',tasks:[],waiting:null,iteration:0,tokensUsed:0,tokenBudget:null,automaticTurns:0,noProgressTurns:0,safetyPauseCause:null,summary:null,
   prs:[{ref:'github.com/o/r#9',url:'https://github.com/o/r/pull/9',title:'Current PR',state:'open',ci:'pending',checkedAt:1}],
@@ -565,5 +582,6 @@ test('the current-session goal shows its pull requests and completion conditions
  const props={registry:{version:1,revision:1,entries:[]},assignedGoal:assigned,colors,identity:'current',locked:false,busy:false,executionAvailable:true,limits:{},post:async()=>false};
  let nodes=h.draw(props);button(nodes,assigned.text).props.onPress();nodes=h.draw(props);
  const texts=JSON.stringify(nodes);
- for(const expected of ['Pull requests','Current PR','Completion conditions','--ci-green'])assert.ok(texts.includes(expected),expected);
+ for(const expected of ['Pull requests','Current PR, Open · CI running','Copy command: forge-pr -R github.com/o/r check 9 --ci-green'])assert.ok(texts.includes(expected),expected);
+ assert.ok(texts.includes('"name":"Clock"'),'the pending condition shows as running on its PR');
 });
