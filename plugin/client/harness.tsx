@@ -1,6 +1,6 @@
 import { observeAgentDirectory, retainContribution } from "./agent-directory";
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { readJobs } from "./jobs-pages";
 import { readSubagents } from './subagent-pages';
 import { orderTaskTree, taskGroupKey, treeAttemptKey } from "../shared/subagent-tree";
@@ -19,10 +19,40 @@ import {
 } from "@getpaseo/plugin/client";
 import * as pluginClient from "@getpaseo/plugin/client";
 
-// Older apps don't export usePaseo. The export set is fixed per installation, so which
-// hook runs never changes between renders.
-const usePaseoIfAvailable: () => { terminals: { ref: unknown } } | undefined =
-	(pluginClient as { usePaseo?: () => { terminals: { ref: unknown } } }).usePaseo ?? (() => undefined);
+type TerminalRef = { readonly id: string; readonly hostId: string };
+type PaseoTerminals = { terminals: { ref(ref: TerminalRef): { focus?: () => void } } };
+// Older apps export neither hook. The export set is fixed per installation, so which hooks
+// run never changes between renders.
+const client = pluginClient as {
+	usePaseo?: () => PaseoTerminals;
+	useTerminals?: (query: { hosts: string[] }) => readonly TerminalRef[];
+};
+const canOpenTerminals = !!client.usePaseo && !!client.useTerminals;
+
+/** Opens a running job's terminal tab. Paseo only focuses terminals by the reference it hands
+ * out itself, so the button finds the job's tab in Paseo's own terminal list. */
+function JobOpenButton({ hostId, terminalId, colors, onError }: {
+	hostId: string; terminalId: string; colors: PluginWorkspacePanelProps["theme"]["colors"]; onError(message: string | undefined): void;
+}) {
+	const paseo = client.usePaseo!();
+	const ref = client.useTerminals!({ hosts: [hostId] }).find(item => item.id === terminalId);
+	if (!ref) return null;
+	return <NativeButton colors={colors} label="Open" style={{ paddingVertical: 2, paddingHorizontal: 10 }} onPress={() => {
+		onError(undefined);
+		try {
+			paseo.terminals.ref(ref).focus?.();
+		} catch {
+			onError("Could not open the job's tab. Open it from the tab bar instead.");
+		}
+	}} />;
+}
+
+/** Hides the Open button instead of breaking the Jobs list when Paseo can't list terminals. */
+class Quietly extends Component<{ children: ReactNode }, { failed: boolean }> {
+	state = { failed: false };
+	static getDerivedStateFromError() { return { failed: true }; }
+	render() { return this.state.failed ? null : this.props.children; }
+}
 import {
 	harnessStatusRpc,
 	harnessJobsListRpc,
@@ -723,20 +753,7 @@ function HarnessPanel({
 	const opening = useRef(false), mounted = useRef(true);
 	const [openingId, setOpeningId] = useState<string>();
 	const [openError, setOpenError] = useState<string>();
-	const paseo = usePaseoIfAvailable();
-	/** Focuses a running job's terminal tab. Older apps can't focus terminals and say so. */
-	const openJobTab = (terminalId: string) => {
-		setOpenError(undefined);
-		try {
-			const ref = { kind: "terminal" as const, key: JSON.stringify([host.id, terminalId]), hostId: host.id, id: terminalId };
-			if (!paseo) throw new Error("unsupported");
-			const handle = (paseo.terminals.ref as (ref: unknown) => { focus?: () => void })(ref);
-			if (typeof handle.focus !== "function") throw new Error("unsupported");
-			handle.focus();
-		} catch {
-			setOpenError("Could not open the job's tab. Update Paseo, or open it from the tab bar.");
-		}
-	};
+
 	// Keep status centers in list coordinates: row heights change when titles wrap or reports expand.
 	const treeContainer = useRef<View>(null);
 	const treeRowRefs = useRef(new Map<string, View>());
@@ -1039,9 +1056,8 @@ function HarnessPanel({
 							row.status,
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
 							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
-							paseo && "terminalId" in row && row.terminalId && viewMode !== "completed"
-								? <NativeButton colors={theme.colors} label="Open" onPress={() => openJobTab(row.terminalId!)}
-									style={{ paddingVertical: 2, paddingHorizontal: 10 }} />
+							canOpenTerminals && "terminalId" in row && row.terminalId && viewMode !== "completed"
+								? <Quietly><JobOpenButton hostId={host.id} terminalId={row.terminalId} colors={theme.colors} onError={message => setOpenError(message)} /></Quietly>
 								: undefined,
 						)}
 						{selectedId === id ? selectedDetail : null}
