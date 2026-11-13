@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { QuietWarning } from "./work-layout";
 import {
 	SettingsSelect,
 	Modal,
@@ -253,9 +254,17 @@ function WorkflowsView({
 				</Text>
 			) : null}
 			{!query.isPending && !query.isError && !data?.available ? (
-				<Metadata colors={colors}>
-					Reload Pi to enable Worktree and Goal.
-				</Metadata>
+				<View style={{ flexDirection: "row", gap: 12, alignItems: "flex-start", padding: 16, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
+					<Icon name="RefreshCw" size={18} color={colors.foregroundMuted} />
+					<View style={{ flex: 1, gap: 4 }}>
+						<Text style={{ color: colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "500" }}>
+							This chat runs an older Pi
+						</Text>
+						<Metadata colors={colors}>
+							Goals and worktrees need the current extensions. Reload Pi in this chat to turn them on. Jobs and agents keep working.
+						</Metadata>
+					</View>
+				</View>
 			) : null}
 			{binding && saved.binding !== binding ? (
 				<View>
@@ -444,7 +453,7 @@ function WorkflowsView({
 							) : null}
 							</View>
 							{snapshot.worktreeLoading ? <Text style={{ color: colors.foregroundMuted }}>Loading worktrees…</Text> : null}
-							{snapshot.worktreeError && snapshot.worktreeError !== "Worktree inventory timed out; open a repository directly for a narrower view." ? <Text selectable style={{ color: colors.statusWarning }}>{snapshot.worktreeError}</Text> : null}
+							{snapshot.worktreeError && snapshot.worktreeError !== "Worktree inventory timed out; open a repository directly for a narrower view." ? <QuietWarning colors={colors} summary="Some worktrees couldn't be listed and were skipped." detail={snapshot.worktreeError} /> : null}
 							{!snapshot.worktreeLoading &&
 							!snapshot.worktreeError &&
 							!visibleWorktrees.length ? (
@@ -509,7 +518,7 @@ function WorkflowsView({
 										<View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, paddingVertical: 4, paddingRight: 4, backgroundColor: selected ? colors.surface1 : "transparent" }}>
 										<Pressable
 											accessibilityRole="button"
-											accessibilityLabel={`${selected ? "▾" : "▸"} ${ownerName ?? branch}`}
+											accessibilityLabel={ownerName ?? branch}
 											accessibilityHint="Show checkout details, agent and removal options"
 											accessibilityState={{ expanded: selected }}
 											onPress={() =>
@@ -526,14 +535,17 @@ function WorkflowsView({
 												backgroundColor: pressed || selected ? colors.surface2 : "transparent",
 											})}
 										>
-											<Text
-												numberOfLines={1}
-												style={{ color: colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "600" }}
-											>
-												{selected ? "▾ " : "▸ "}{ownerName ?? branch}
-											</Text>
-											{byGoal ? <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 12 }}>{tree.repositoryPath ?? tree.repositoryLabel ?? "Repository unavailable"}</Text> : null}
-											<Text numberOfLines={1} style={{ color: tree.setupError || tree.stale || tree.locked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 12 }}>{ownerName ? `${branch} · ` : ""}{rowState}</Text>
+											<View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+												<Icon name={selected ? "ChevronDown" : "ChevronRight"} size={14} color={colors.foregroundMuted} />
+												<Text
+													numberOfLines={1}
+													style={{ flexShrink: 1, color: colors.foreground, fontSize: 14, lineHeight: 20, fontWeight: "600" }}
+												>
+													{ownerName ?? branch}
+												</Text>
+											</View>
+											{byGoal ? <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 20 }}>{tree.repositoryPath ?? tree.repositoryLabel ?? "Repository unavailable"}</Text> : null}
+											<Text numberOfLines={1} style={{ color: tree.setupError || tree.stale || tree.locked ? colors.statusWarning : colors.foregroundMuted, fontSize: 12, lineHeight: 18, paddingLeft: 20 }}>{ownerName ? `${branch} · ` : ""}{rowState}</Text>
 										</Pressable>
 										<WorktreeWorkspaceAction path={tree.path} diffStat={tree.diffStat} disabled={workspaceUnavailable}
 											onPress={() => start("worktree.open", { path: tree.path })} colors={colors} />

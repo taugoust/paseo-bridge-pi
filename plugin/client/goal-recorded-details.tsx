@@ -4,15 +4,17 @@ import type { DelegatedGoal } from "./delegated-goals";
 import { Metadata, type PresentationColors } from "./presentation";
 import { GoalButton as NativeButton, useGoalText } from "./goal-language";
 /** Evidence only: a recorded blocker or deadline never changes execution status. */
-export function GoalRecordedDetails({ goal, colors }: { goal: DelegatedGoal; colors: PresentationColors }) {
+/** Embedded inside the goal's Details section, it shows its contents without its own toggle. */
+export function GoalRecordedDetails({ goal, colors, embedded = false }: { goal: DelegatedGoal; colors: PresentationColors; embedded?: boolean }) {
   const { t, time } = useGoalText();
-  const [expanded, setExpanded] = useState(false);
+  const [toggled, setExpanded] = useState(false);
+  const expanded = embedded || toggled;
   const diagnostic = goal.diagnostics;
   const times = [...(goal.story?.timeline ?? []), ...(goal.story?.activity ?? [])].map(event => event.at);
   const latest = times.length ? Math.max(...times) : undefined;
   if (!diagnostic && !goal.observation && latest === undefined) return null;
   return <View style={{ gap: 8 }}>
-    <NativeButton colors={colors} label={expanded ? "Hide recorded details" : "Recorded details"} onPress={() => setExpanded(!expanded)} />
+    {embedded ? null : <NativeButton colors={colors} label={expanded ? "Hide recorded details" : "Recorded details"} onPress={() => setExpanded(!expanded)} />}
     {expanded ? <View style={{ gap: 8 }}>
       {latest !== undefined ? <Metadata colors={colors}>{t("Last recorded update: {{time}}",{time:time(latest)})}</Metadata> : null}
       {goal.observation?.state === "unavailable" ? <Metadata colors={colors}>{t("Live observation unavailable")}{goal.observation.at ? ` · ${t("Last observed {{time}}",{time:time(goal.observation.at)})}` : ""}</Metadata> : null}

@@ -7,15 +7,17 @@ import { Metadata, type PresentationColors } from "./presentation";
 import { GoalButton as NativeButton, useGoalText } from "./goal-language";
 import { PressableRow } from "./goal-ticket-ui";
 
-export function GoalPlanning({ goal, colors, disabled, available, post }: {
-  goal: DelegatedGoal; colors: PresentationColors; disabled: boolean; available: boolean;
+/** Embedded inside the goal's Details section, it shows its contents under a plain heading. */
+export function GoalPlanning({ goal, colors, disabled, available, post, embedded = false }: {
+  goal: DelegatedGoal; colors: PresentationColors; disabled: boolean; available: boolean; embedded?: boolean;
   post(action: string, fields: Record<string, unknown>): Promise<boolean>;
 }) {
   const { t, time } = useGoalText();
-  const [expanded, setExpanded] = useState(false), [mode, setMode] = useState<"dependencies" | "blocker">();
+  const [toggled, setExpanded] = useState(false), [mode, setMode] = useState<"dependencies" | "blocker">();
   const [revision, setRevision] = useState(goal.revision), [taskId, setTaskId] = useState(""), [waitsFor, setWaitsFor] = useState<string[]>([]);
   const [reason, setReason] = useState(""), [evidence, setEvidence] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
   const [history, setHistory] = useState(false);
+  const expanded = embedded || toggled;
   const planning = goal.planning, blockers = planning?.blockers ?? [], dependencies = planning?.dependencies ?? [];
   const activeBlockers = blockers.filter(blocker => blocker.clearedAt === undefined), terminal = goal.status === "complete" || goal.status === "cleared";
   const locked = disabled || busy || !available, stale = revision !== goal.revision;
@@ -29,7 +31,7 @@ export function GoalPlanning({ goal, colors, disabled, available, post }: {
   if (!available && !planning) return null;
   const input = { minHeight: 44, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, color: colors.foreground, backgroundColor: colors.surface2 } as const;
   return <View style={{ gap: 10 }}>
-    <NativeButton colors={colors} label={expanded ? "Hide planning" : activeBlockers.length ? t(activeBlockers.length===1 ? "Planning · {{count}} recorded blocker" : "Planning · {{count}} recorded blockers", {count:activeBlockers.length}) : "Planning"} onPress={() => setExpanded(!expanded)} />
+    {embedded ? <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "500" }}>{t("Dependencies and blockers")}</Text> : <NativeButton colors={colors} label={expanded ? "Hide planning" : activeBlockers.length ? t(activeBlockers.length===1 ? "Planning · {{count}} recorded blocker" : "Planning · {{count}} recorded blockers", {count:activeBlockers.length}) : "Planning"} onPress={() => setExpanded(!expanded)} />}
     {expanded ? <View style={{ gap: 12 }}>
       <Metadata colors={colors}>{t("Advisory dependencies and recorded blockers do not start, pause or complete work.")}</Metadata>
       {dependencies.map(edge => <View key={edge.taskId} style={{ gap: 4 }}><Text style={{ color: colors.foreground, fontSize: 13 }}>{goal.tasks.find(task => task.id === edge.taskId)?.text}</Text><Metadata colors={colors}>{t("Waits for: {{tasks}}", {tasks:edge.waitsFor.map(id => goal.tasks.find(task => task.id === id)?.text ?? id).join(" · ")})}</Metadata></View>)}
