@@ -17,6 +17,42 @@ import {
 	type PluginWorkspacePanelProps,
 	type PluginButtonRegistration,
 } from "@getpaseo/plugin/client";
+import * as pluginClient from "@getpaseo/plugin/client";
+
+type TerminalRef = { readonly id: string; readonly hostId: string };
+type PaseoTerminals = { terminals: { ref(ref: TerminalRef): { focus?: () => void } } };
+// Older apps export neither hook. The export set is fixed per installation, so which hooks
+// run never changes between renders.
+const client = pluginClient as {
+	usePaseo?: () => PaseoTerminals;
+	useTerminals?: (query: { hosts: string[] }) => readonly TerminalRef[];
+};
+const canOpenTerminals = !!client.usePaseo && !!client.useTerminals;
+
+/** Opens a running job's terminal tab. Paseo only focuses terminals by the reference it hands
+ * out itself, so the button finds the job's tab in Paseo's own terminal list. */
+function JobOpenButton({ hostId, terminalId, colors, onError }: {
+	hostId: string; terminalId: string; colors: PluginWorkspacePanelProps["theme"]["colors"]; onError(message: string | undefined): void;
+}) {
+	const paseo = client.usePaseo!();
+	let ref: TerminalRef | undefined;
+	try {
+		ref = client.useTerminals!({ hosts: [hostId] }).find(item => item.id === terminalId);
+	} catch {
+		// Paseo couldn't list this host's terminals. Show no button rather than break the list.
+		ref = undefined;
+	}
+	if (!ref) return null;
+	return <NativeButton colors={colors} label="Open" style={{ paddingVertical: 2, paddingHorizontal: 10 }} onPress={() => {
+		onError(undefined);
+		try {
+			paseo.terminals.ref(ref!).focus?.();
+		} catch {
+			onError("Could not open the job's tab. Open it from the tab bar instead.");
+		}
+	}} />;
+}
+
 import {
 	harnessStatusRpc,
 	harnessJobsListRpc,
@@ -717,6 +753,7 @@ function HarnessPanel({
 	const opening = useRef(false), mounted = useRef(true);
 	const [openingId, setOpeningId] = useState<string>();
 	const [openError, setOpenError] = useState<string>();
+
 	// Keep status centers in list coordinates: row heights change when titles wrap or reports expand.
 	const treeContainer = useRef<View>(null);
 	const treeRowRefs = useRef(new Map<string, View>());
@@ -817,6 +854,7 @@ function HarnessPanel({
 		status?: string,
 		presentation?: { title: string; detail: string; expanded?: boolean; opensChat: boolean },
 		anchorKey?: string,
+		action?: ReactNode,
 	) => (
 		<NativeRow
 			colors={theme.colors}
@@ -830,7 +868,10 @@ function HarnessPanel({
 				: status ? <View style={kind === "subagents" ? { width: 14, height: 14, alignItems: "center", justifyContent: "center" } : undefined}>{(['starting', 'launching', 'pending', 'running'].includes(status)
 				? <View accessibilityLabel="Running"><WorkStatusRing attention={false} foreground={fg} platform={layout.platform} /></View>
 				: <View accessibilityLabel={kind === "jobs" ? status : status === "lost" ? "Lost" : status === "failed" ? "Failed" : "Idle"} style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: status === "lost" || status === "failed" ? danger : kind === "jobs" && status !== "completed" ? muted : theme.colors.statusSuccess }} />)}</View> : undefined}
-			trailing={<Icon name={presentation?.opensChat ? "ChevronRight" : presentation?.expanded ? "ChevronUp" : "ChevronDown"} size={14} color={muted} />}
+			trailing={<View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+				{action}
+				<Icon name={presentation?.opensChat ? "ChevronRight" : presentation?.expanded ? "ChevronUp" : "ChevronDown"} size={14} color={muted} />
+			</View>}
 			disabled={disabled}
 			onPress={onPress}
 			style={{ paddingVertical: 8, minHeight: 44 }}
@@ -1015,6 +1056,9 @@ function HarnessPanel({
 							row.status,
 							{ title, detail: metadata, opensChat, expanded: opensChat ? undefined : selectedId === id },
 							kind === "subagents" && "childId" in row ? treeAttemptKey(row) : undefined,
+							canOpenTerminals && "terminalId" in row && row.terminalId && viewMode !== "completed"
+								? <JobOpenButton hostId={host.id} terminalId={row.terminalId} colors={theme.colors} onError={message => setOpenError(message)} />
+								: undefined,
 						)}
 						{selectedId === id ? selectedDetail : null}
 					</View>

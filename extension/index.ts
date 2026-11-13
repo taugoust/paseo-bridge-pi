@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { parseTmuxTarget } from "../shim/tmux-target.js";
 import { paseoImportArgs, importRetryDelay, retryableWorkspaceImportFailure, workspaceIdForPlacement } from "./import-placement.js";
 import { completeWithSessionModel } from "./session-model-request.ts";
+import { jobTerminalId } from "./job-terminal.ts";
 import { sameReadOnlySession, assertReadOnlyConversationResponse } from "./read-only-session.ts";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import * as sessionManagerApi from "@earendil-works/pi-coding-agent";
@@ -1193,6 +1194,15 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           if (cursor !== undefined && (typeof cursor !== "string" || Buffer.byteLength(cursor) > 1024)) throw new Error("Invalid page cursor");
           const page = await service.list({ sessionId, ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }) });
           assertCurrent();
+          // Running jobs get the ID of their Paseo terminal tab, so the Work tab can open it.
+          if (method === "jobs.list" && Array.isArray(page?.items)) {
+            for (const item of page.items) {
+              if (["starting", "running"].includes(item?.status)) {
+                const terminalId = jobTerminalId(item.jobId);
+                if (terminalId) item.terminalId = terminalId;
+              }
+            }
+          }
           // Resolve a child chat only when its detail is opened. Scanning the
           // runtime registry once per list row is expensive on shared homes.
           return page;

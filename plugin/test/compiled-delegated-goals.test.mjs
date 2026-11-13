@@ -370,16 +370,18 @@ test('saved, delegated and current-session goals share one list and goal page; a
  assert.equal(draft.sourceId,'draft');assert.equal(draft.reactKey,'catalog:draft');assert.equal(draft.binding,'unassigned');assert.equal(running.binding,'subagent');
  assert.notEqual(h.savedPresentation(entry('parent')).reactKey,current.reactKey,'Source identity must not collide with a React selection key');
  button(nodes,'Goal parent').props.onPress();nodes=h.draw(props);
- const readOnly=nodes=>{
-  for(const label of ['Start','Resume','Edit','Pause','Clear','Clear goal','···','Save task'])assert.equal(button(nodes,label),undefined,label);
+ // This chat's own goal can only be paused or resumed. Nothing else on it is editable.
+ const readOnly=(nodes,allowed=[])=>{
+  for(const label of ['Start','Resume','Edit','Pause','Clear','Clear goal','···','Save task'].filter(label=>!allowed.includes(label)))assert.equal(button(nodes,label),undefined,label);
   for(const text of ['Add task','Pause the goal to add tasks','50-task limit reached'])assert.equal(JSON.stringify(nodes).includes(JSON.stringify(text)),false,text);
   assert.equal(textbox(nodes,'Subtask'),undefined);
  };
- readOnly(nodes);
+ readOnly(nodes,['Resume']);
+ assert.ok(button(nodes,'Resume'),'a paused goal of this chat can be resumed from its page');
  assert.ok(nodes.some(n=>n.type==='Text'&&joined(n)==='This chat'),'the owner line names the current chat');
  for(const title of ['Activity','Questions','Details'])assert.ok(section(nodes,title),title);
  assert.ok(nodes.some(n=>n.props.accessibilityRole==='progressbar'&&n.props.accessibilityValue.now===1));
- nodes=openSection(h,props,'Questions');readOnly(nodes);assert.equal(button(nodes,'Submit answers'),undefined);
+ nodes=openSection(h,props,'Questions');readOnly(nodes,['Resume']);assert.equal(button(nodes,'Submit answers'),undefined);
  assert.ok(nodes.some(n=>n.props.children==='No recorded questions available for this assigned goal'));
  button(nodes,'Back to goals').props.onPress();nodes=h.draw(props);completedHeading(nodes).props.onPress();nodes=h.draw(props);
  button(nodes,'Old assigned goal').props.onPress();nodes=openSection(h,props,'Details');
