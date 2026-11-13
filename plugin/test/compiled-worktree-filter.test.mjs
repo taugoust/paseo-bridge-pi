@@ -22,7 +22,7 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     if (name === "zod") { const schema = new Proxy({}, { get: () => () => schema }); return { z: new Proxy({}, { get: () => () => schema }) }; }
     if (name === "@getpaseo/plugin/client/ui") return { SettingsCard: "SettingsCard", SettingsSection: "SettingsSection", SettingsSelect: "SettingsSelect", SettingsAction: "SettingsAction" };
     if (name === "@getpaseo/plugin/client") return { useRpc: contract => contract.name === "workflows_status" ? async () => data() : async value => { commands.push(value); return { accepted: true, openedWorkspaceId: "exact-workspace", snapshot }; } };
-    if (name === "@getpaseo/plugin/client/react-native") return { ScrollView: "ScrollView", TextInput: "TextInput" };
+    if (name === "@getpaseo/plugin/client/react-native") return { ScrollView: "ScrollView", TextInput: "TextInput", Icon: "Icon" };
     if (name === "react-native") return { View: "View", Text: "Text", Pressable: "Pressable" };
     if (name === "react") return { useEffect() {}, useRef: initial => ({ current: initial }), useState: initial => { const i = hookIndex++; hookStates[i] ??= typeof initial === "function" ? initial() : initial; return [hookStates[i], next => { hookStates[i] = typeof next === "function" ? next(hookStates[i]) : next; }]; } };
     if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
@@ -44,7 +44,10 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     visit(tree); return nodes;
   }
   const press = (nodes, label) => nodes.find(n => n.type === "Pressable" && textOf(n) === label);
-  const row = nodes => nodes.find(n => n.type === "Pressable" && n.props.accessibilityState?.expanded !== undefined);
+  // Worktree rows, not other disclosures such as the inventory warning's Show.
+  const rows = nodes => nodes.filter(n => n.type === "Pressable" && n.props.accessibilityHint === "Show checkout details, agent and removal options");
+  const row = nodes => rows(nodes)[0];
+  const chevron = row => [row.props.children].flat(Infinity).flatMap(function all(n) { return !n || typeof n !== "object" ? [] : [n, ...[n.props?.children].flat(Infinity).flatMap(all)]; }).find(n => n.type === "Icon")?.props.name;
   const link = nodes => nodes.find(n => n.props?.accessibilityRole === "link");
   const makeTree = (path, createdInSession, repositoryPath = "/repo", extra = {}) => ({ path, createdInSession, repositoryPath, repositoryLabel: repositoryPath, branch: "pi/branch", head: "abcdef", main: false, current: false, locked: false, stale: false, detached: false, changedFiles: 0, ...extra });
   const idle = { protocol: 1, sessionId, serviceEpoch: "service", cwd: "/repo", model: null, busy: false, idle: true, notice: null, operationId: null, operationAction: null, protectedPaths: [], dialog: null, worktreeError: null, worktreeLoading: false, worktreeRepositoryCount: 1, worktreeContainer: false, goal: null, completedGoals: [], lastCompletion: null, worktree: null, worktrees: [] };
@@ -53,7 +56,7 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     let nodes = await render();
     press(nodes, "Connect current session")?.props.onPress();
     nodes = await render();
-    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 3);
+    assert.equal(rows(nodes).length, 3);
     assert.deepEqual(nodes.filter(n => n.props?.accessibilityRole === "header").map(textOf), ["/second · 2", "/repo · 1"]);
     assert.equal(link(nodes), undefined, "absolute paths are tucked into details, not repeated in every collapsed row");
     assert.ok(nodes.some(n => n.props.style?.maxWidth === 740), "desktop list width is bounded");
@@ -73,29 +76,35 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     assert.equal(press(nodes, "By Goal").props.accessibilityState.selected, true);
     assert.equal(press(nodes, "This session").props.accessibilityState.selected, false);
     assert.deepEqual(nodes.filter(n => n.props?.accessibilityRole === "header").map(textOf), ["Goal A · 2", "Goal B · 1", "Unassigned · 1"]);
-    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 4);
+    assert.equal(rows(nodes).length, 4);
     assert.ok(nodes.some(n => n.type === "Text" && textOf(n) === "/second"), "repository context is visible on Goal rows");
     press(nodes, "This session").props.onPress(); nodes = await render();
     assert.deepEqual(nodes.filter(n => n.props?.accessibilityRole === "header").map(textOf), ["/repo · 3"]);
     press(nodes, "All worktrees").props.onPress(); nodes = await render();
-    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 6);
+    assert.equal(rows(nodes).length, 6);
     press(nodes, "By Goal").props.onPress(); snapshot.worktrees = []; nodes = await render();
     assert.ok(nodes.some(n => textOf(n) === "No session-created worktrees"));
     press(nodes, "This session").props.onPress(); snapshot = original;
     snapshot.worktreeError = "Permission denied [synthetic]";
     nodes = await render();
-    assert.ok(nodes.some(n => textOf(n) === snapshot.worktreeError));
+    assert.ok(nodes.some(n => n.type === "Text" && textOf(n) === "Some worktrees couldn't be listed and were skipped."), "a partial inventory says so");
+    assert.ok(!nodes.some(n => textOf(n) === snapshot.worktreeError), "the raw error waits behind Show");
+    assert.equal(press(nodes, "Show").props.accessibilityState.expanded, false);
+    press(nodes, "Show").props.onPress(); nodes = await render();
+    assert.ok(nodes.some(n => n.type === "Text" && textOf(n) === snapshot.worktreeError && n.props.selectable), "the exact error stays available and selectable");
+    assert.equal(rows(nodes).length, 3, "listed worktrees remain alongside the warning");
     press(nodes, "All worktrees").props.onPress(); nodes = await render();
-    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 4);
+    assert.equal(rows(nodes).length, 4);
     press(nodes, "This session").props.onPress(); nodes = await render();
-    assert.equal(nodes.filter(n => n.props.accessibilityState?.expanded !== undefined).length, 3);
+    assert.equal(rows(nodes).length, 3);
     snapshot = { ...idle, worktrees: [makeTree("/repo/legacy", undefined)] };
     nodes = await render(); assert.ok(nodes.some(n => textOf(n) === "No session-created worktrees"));
     press(nodes, "All worktrees").props.onPress(); nodes = await render(); assert.ok(row(nodes));
     sessionId = "session-b"; snapshot = { ...idle, sessionId, worktrees: [makeTree("/repo/not-ours", false), makeTree("/repo/new-ours", true, "/repo", { ownerTitle: "RAW TASK INSTRUCTIONS DO NOT DISPLAY" })] };
     await render(); nodes = await render();
     assert.equal(press(nodes, "This session").props.accessibilityState.selected, true);
-    assert.equal(row(nodes).props.accessibilityLabel, "▸ pi/branch");
+    assert.equal(row(nodes).props.accessibilityLabel, "pi/branch");
+    assert.equal(chevron(row(nodes)), "ChevronRight", "a collapsed row shows a right chevron");
     assert.ok(!nodes.some(n => textOf(n).includes("RAW TASK")));
     assert.equal(row(nodes).props.accessibilityState.expanded, false);
     press(nodes, "By Goal").props.onPress(); nodes = await render();
@@ -142,16 +151,19 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     }
     for (const [extra, title] of [[{ branch: null, detached: true }, "Detached HEAD"], [{ branch: null, detached: false }, "Branch unavailable"]]) {
       snapshot = { ...idle, sessionId, worktrees: [makeTree("/repo/new-ours", true, "/repo", extra)] }; nodes = await render();
-      assert.equal(row(nodes).props.accessibilityLabel, `▾ ${title}`);
+      assert.equal(row(nodes).props.accessibilityLabel, title);
+      assert.equal(row(nodes).props.accessibilityState.expanded, true);
+      assert.equal(chevron(row(nodes)), "ChevronDown", "an expanded row shows a down chevron");
     }
     row(nodes).props.onPress();
     snapshot.worktrees[0].recordedOwner = { ownerSessionId: sessionId, taskId: "task", childId: "child", canonicalDisplayName: "Workspace Activity Spinner" };
     nodes = await render();
-    assert.equal(row(nodes).props.accessibilityLabel, "▸ Workspace Activity Spinner", "validated canonical name is promoted into the collapsed row");
+    assert.equal(row(nodes).props.accessibilityLabel, "Workspace Activity Spinner", "validated canonical name is promoted into the collapsed row");
+    assert.equal(chevron(row(nodes)), "ChevronRight");
     assert.ok(textOf(row(nodes)).includes("Branch unavailable"), "Git identity remains alongside canonical owner name");
     snapshot.worktrees[0].recordedOwner.canonicalDisplayName = "This is an old untrusted task prompt with too many words";
     nodes = await render();
-    assert.equal(row(nodes).props.accessibilityLabel, "▸ Branch unavailable", "never promote raw task descriptions");
+    assert.equal(row(nodes).props.accessibilityLabel, "Branch unavailable", "never promote raw task descriptions");
     assert.equal(commands.filter(c => c.request.action === "worktree.remove").length, 0, "no destructive action executed by tests");
   } finally { cleanup(); }
 });

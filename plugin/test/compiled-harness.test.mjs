@@ -91,7 +91,9 @@ test('compiled read-only panels render lists/details, bind generations and only 
     assert.match(text(row), /Build.*Running/);
     assert.ok(nodes(row).some(node => node.type === 'Icon' && node.props.name === 'ChevronDown'));
     assert.equal(queries[2].enabled, false, 'status refresh must not retrieve collapsed output');
-    assert.ok(nodes(tree).some(node => node.props?.style?.paddingHorizontal === 16 && node.props?.style?.paddingVertical === 16));
+    assert.ok(nodes(tree).some(node => node.props?.style?.padding === 12), 'the standalone panel keeps its own padding; only the embedded Work list drops it');
+    const list = nodes(tree).find(node => node.props?.style?.borderWidth === 1 && node.props.style.borderRadius === 8 && node.props.style.overflow === 'hidden');
+    assert.ok(list && nodes(list).includes(row), 'job rows sit in one bordered list');
     row.props.onPress();
     detailResult = { data: { state: 'available', item: { jobId: job.jobId, text: 'Build output', stale: true, lastUpdated: null, truncated: true } } };
     tree = render('harness-jobs');
@@ -113,7 +115,9 @@ test('compiled read-only panels render lists/details, bind generations and only 
     statusResult = { data: identity }; states.length = 0;
     listResult.data.items = [{ ...job, name: null, status: 'completed', observationOnly: true }];
     tree = render('harness-jobs');
-    assert.ok(nodes(tree).some(node => node.props?.style?.borderRadius === 10), 'legacy all-jobs panel retains its original card; compact styling is scoped to Completed view');
+    const finishedRow = nodes(tree).find(node => node.type === 'Pressable' && node.props.accessibilityLabel?.startsWith(job.jobId));
+    assert.ok(finishedRow && nodes(nodes(tree).find(node => node.props?.style?.borderWidth === 1 && node.props.style.borderRadius === 8)).includes(finishedRow), 'the all-jobs panel keeps finished jobs in the same bordered list, not a card per row');
+    assert.ok(!nodes(tree).some(node => node.props?.style?.borderRadius === 10), 'no per-row card');
     assert.match(text(tree), new RegExp(`${job.jobId}.*Completed · .* · Observation only`), 'real ID fallback and observation label remain visible');
     states.length = 0;
     const task = { taskId: `subagent-task-${'b'.repeat(24)}`, childId: `subagent-child-${'c'.repeat(24)}`, groupId: `subagent-job-${'d'.repeat(24)}`, runtimeId: 'runtime', title: 'Review', status: 'completed', attempt: 1,
@@ -124,7 +128,7 @@ test('compiled read-only panels render lists/details, bind generations and only 
     detailResult = { data: { state: 'available', item: { ...task, text: 'Reviewed successfully', truncated: false, stale: true, lastUpdated: null, paseoAgentId: 'verified-child' } } };
     tree = render('harness-subagents');
     assert.match(text(tree), /Reviewed successfully/);
-    press(tree, 'Open child chat');
+    press(tree, 'Open chat');
     assert.deepEqual(opened.pop(), { agentId: 'verified-child', serverId: 'host' });
     await queries[2].queryFn();
     assert.equal(calls.at(-1).name, 'harness_subagent_report');
@@ -134,7 +138,7 @@ test('compiled read-only panels render lists/details, bind generations and only 
     assert.equal(calls.at(-1).input.expectedSessionId, 'nested-session');
     assert.equal(calls.at(-1).input.expectedRuntimeEpoch, identity.runtimeEpoch);
     delete detailResult.data.item.paseoAgentId;
-    assert.doesNotMatch(text(render('harness-subagents')), /Open child chat/);
+    assert.doesNotMatch(text(render('harness-subagents')), /Open chat/);
     assert.ok(calls.every(call => ['harness_jobs_output', 'harness_subagent_report'].includes(call.name)));
     assert.doesNotMatch(text(tree), /Cancel|Reap|Send instruction/);
   } finally { cleanup(); }

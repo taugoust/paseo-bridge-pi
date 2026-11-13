@@ -7,6 +7,7 @@ import { NativeRunningTurnFooter, NativeToolBadge } from "./native-transcript";
 import { mergeLiveToolEvents, preferredToolResult, preferredToolPresentation, selectedToolResultSource, literalToolResult } from "./native-tool-details";
 import { isNativeScrollViewNearBottom } from "./native-transcript-model";
 import { TranscriptMarkdown } from "./transcript-markdown";
+import { workerTask } from "./worker-task";
 import { useQuery } from "@tanstack/react-query";
 import { useRpc } from "@getpaseo/plugin/client";
 import { harnessSubagentConversationRpc } from "../shared/harness-readonly";
@@ -59,7 +60,8 @@ export function WorkerConversation({ target, epoch, colors, platform }: {
           const showCalls = message.parts?.some(part => part.type === "toolCall");
           if (!showProse && !showResult && !showCalls && !message.truncated) return null;
           return <View key={message.id} style={{ gap: showProse ? 12 : 0, ...(showProse ? { marginVertical: 6 } : {}) }}>
-          {(message.role === "user" || message.role === "parent") && message.text ? <View style={{ alignSelf: "flex-end", maxWidth: "88%", borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.surface1 }}><TranscriptMarkdown text={message.text} colors={colors} platform={platform} /></View> : null}
+          {message.role === "parent" && message.text && workerTask(message.text) ? <WorkerTask task={workerTask(message.text)!} colors={colors} /> : null}
+          {(message.role === "user" || message.role === "parent") && message.text && !(message.role === "parent" && workerTask(message.text)) ? <View style={{ alignSelf: "flex-end", maxWidth: "88%", borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.surface1 }}><TranscriptMarkdown text={message.text} colors={colors} platform={platform} /></View> : null}
           {message.role === "assistant" && message.text ? <TranscriptMarkdown text={message.text} colors={colors} platform={platform} /> : null}
           {message.role === "tool" && (!message.toolCallId || !visibleCallIds.has(message.toolCallId)) ? <NativeToolBadge
             name={message.toolName ?? "tool"} status={message.status ?? "unknown"}
@@ -166,4 +168,16 @@ export function createAgentConversationTabs(client: PluginClientContext) {
     },
     dispose() { disposed = true; disposeScreen(); },
   };
+}
+
+/** A worker's task and acceptance criteria, without the harness's fixed reporting instructions. */
+function WorkerTask({ task, colors }: { task: { task: string; acceptance: string[] }; colors: any }) {
+  return <View style={{ gap: 4 }}>
+    <Metadata colors={colors}>Task</Metadata>
+    <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>{task.task}</Text>
+    {task.acceptance.length ? <View style={{ gap: 2, paddingTop: 4 }}>
+      <Metadata colors={colors}>Done when</Metadata>
+      {task.acceptance.map((item, index) => <Text key={index} selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 19 }}>• {item}</Text>)}
+    </View> : null}
+  </View>;
 }

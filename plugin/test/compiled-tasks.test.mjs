@@ -79,15 +79,15 @@ test('compiled Work replaces legacy task pills, lazily scopes foreground/backgro
     assert.match(text(tree),/Helper/);
     assert.match(text(tree),/Build/);
     assert.ok(walk(tree).some(n=>n.type==='ScrollView'),'workspace Work owns bounded scrolling');
-    assert.deepEqual(walk(tree).filter(n=>n.props.accessibilityRole==='tab').map(n=>text(n)),['Jobs','Agents','Worktrees','Goals']);
+    assert.deepEqual(walk(tree).filter(n=>n.props.accessibilityRole==='tab').map(n=>n.props.accessibilityLabel),['Jobs','Agents','Worktrees','Goals']);
     const bound=queries.find(q=>q.queryKey[0]==='harness-list'&&q.queryKey[1]==='jobs');
     await bound.queryFn();
     assert.deepEqual(calls.at(-1).input,{agentId:'a',workspaceId:'w',expectedSessionId:'session',expectedRuntimeEpoch:status.runtimeEpoch,limit:50});
     assert.ok(bound.queryKey.includes('host'));
     assert.ok(queries.find(q=>q.queryKey[0]==='foreground-tasks').queryKey.includes('a'));
-    const agentsTab=walk(tree).find(n=>n.props.accessibilityRole==='tab'&&text(n)==='Agents');
+    const agentsTab=walk(tree).find(n=>n.props.accessibilityRole==='tab'&&n.props.accessibilityLabel==='Agents');
     agentsTab.props.onPress(); tree=render();
-    assert.ok(walk(tree).find(n=>n.props.accessibilityRole==='tab'&&text(n)==='Agents').props.accessibilityState.selected);
+    assert.ok(walk(tree).find(n=>n.props.accessibilityRole==='tab'&&n.props.accessibilityLabel==='Agents').props.accessibilityState.selected);
     assert.doesNotMatch(text(tree),/Helper/,'foreground task is not duplicated in Agents');
     assert.equal(opened.length,1,'section changes do not open legacy panels');
     const prior=control.updates.length;

@@ -3,6 +3,10 @@ export type WorkViewState = {
 	section?: WorkSection;
 	completed: boolean;
 	scroll: Map<string, number>;
+	/** Counts presses on the Work pill. Each new press opens the section with live work. */
+	opened?: number;
+	/** The last press the open tab has acted on. */
+	handled?: number;
 };
 
 /** One instance per host-scoped client contribution. Closing a native tab does
