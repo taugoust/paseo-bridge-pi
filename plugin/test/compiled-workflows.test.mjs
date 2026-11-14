@@ -401,20 +401,18 @@ test("compiled Workflows controls use the private engine, explicit confirmations
 		await query.refetch();
 		tree = render();
 		assert.equal(stops, 1);
-		assert.match(text(tree), /may have completed/);
+		assert.match(text(tree), /lost reply/, "the actual reason is shown");
 		for (const cleanup of effects.splice(0)) cleanup();
 		states.length = 0;
-		tree = render();
-		assert.equal(
-			button(tree, "Resume Goal").props.disabled,
-			true,
-			"uncertainty persists across close/reopen",
-		);
 		loseReply = false;
 		await query.refetch();
 		tree = render();
-		button(tree, "I reviewed the refreshed status").props.onPress();
-		tree = render();
+		assert.equal(button(tree, "I reviewed the refreshed status"), undefined);
+		assert.equal(
+			button(tree, "Resume Goal").props.disabled,
+			false,
+			"controls unlock once the refreshed state is in",
+		);
 		assert.equal(paidIntents, 1, "no automatic retry");
 		// Inventory is asynchronous and never blocks Goal controls.
 		const inventoryDeadline = Date.now() + 10000;
