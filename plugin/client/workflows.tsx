@@ -8,6 +8,7 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useRpc, type PluginAgentPanelProps } from "@getpaseo/plugin/client";
 import { QuietWarning, WorkEmpty } from "./work-layout";
+import { worktreeWarningSummary } from "./worktree-warnings";
 import { goalWorkingColor } from "./goal-ticket-ui";
 import { Metadata, NativeButton, NativeRow } from "./presentation";
 import { WorktreeOwner } from "./worktree-owner";
@@ -258,7 +259,7 @@ function WorkflowsView({
 							onChange={value => { saved.worktreeView = value; redraw(); }} />
 					) : null}
 				</View>
-				{current.worktreeError && current.worktreeError !== "Worktree inventory timed out; open a repository directly for a narrower view." ? <QuietWarning colors={colors} summary="Some worktrees couldn't be listed and were skipped." detail={current.worktreeError} /> : null}
+				{current.worktreeError ? <QuietWarning colors={colors} summary={worktreeWarningSummary(current.worktreeError)} detail={current.worktreeError} /> : null}
 				{!current.worktreeLoading && !current.worktreeError && !count ? (
 					noRepositories ? (
 						<WorkEmpty colors={colors} icon="GitBranch" title="No Git repositories found"
