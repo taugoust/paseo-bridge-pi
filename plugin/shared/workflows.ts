@@ -264,7 +264,7 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 			...base,
 			operation: z.literal("start"),
 			action: z.enum([
-				"goals.create", "goals.start", "goals.pause", "goals.resume", "goals.edit", "goals.limits", "goals.clear", "goals.add_task", "goals.answer", "goals.reference", "goals.dependencies", "goals.blocker.add", "goals.blocker.clear",
+				"goals.create", "goals.start", "goals.pause", "goals.resume", "goals.edit", "goals.limits", "goals.clear", "goals.complete", "goals.add_task", "goals.answer", "goals.reference", "goals.dependencies", "goals.blocker.add", "goals.blocker.clear",
 				"worktree.add",
 				"worktree.remove",
 				"worktree.prune",
@@ -276,6 +276,7 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 				"goal.pause",
 				"goal.resume",
 				"goal.clear",
+				"goal.complete",
 				"goal.add_task",
 			]),
 			expectedGoalId: id.nullable(),
@@ -292,6 +293,8 @@ export const workflowRequestSchema = z.discriminatedUnion("operation", [
 			expectedRegistryRevision: z.number().int().nonnegative().optional(),
 			text: z.string().max(503).optional(),
 			objective: z.string().max(4000).optional(),
+			// Mark complete: the user's summary. The extension adds the override itself.
+			summary: z.string().min(1).max(2000).optional(),
 			tokenBudget: z.number().int().positive().max(1_000_000).nullable().optional(),
 			continuationLimits: continuationLimitsSchema.optional(),
 			path: z.string().max(4096).optional(),

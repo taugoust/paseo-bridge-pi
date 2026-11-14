@@ -159,6 +159,9 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   const [editingLimits, setEditingLimits] = useViewState<boolean>(identity, "editingLimits", false);
   const [clearConfirm, setClearConfirm] = useViewState<boolean>(identity, "clearConfirm", false);
   const [clearRevision, setClearRevision] = useViewState<number | undefined>(identity, "clearRevision", undefined);
+  // Mark complete: the user's override, with a short summary of why.
+  const [completeOpen, setCompleteOpen] = useViewState<boolean>(identity, "completeOpen", false);
+  const [completeSummary, setCompleteSummary] = useViewState<string>(identity, "completeSummary", "");
   const [addingTask, setAddingTask] = useViewState<boolean>(identity, "addingTask", false);
   const [taskText, setTaskText] = useViewState<string>(identity, "taskText", "");
   const [expanded, setExpanded] = useViewState<Record<string, boolean>>(identity, "checklists", {});
@@ -187,7 +190,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       const key = `${identity}/${editingLimits ? "limits" : "edit"}/${goal.id}`;
       drafts.get(key)?.close(); drafts.delete(key); draftRevisions.delete(key);
     }
-    setSelected(id); setSelectionReview(false); setEditing(false); setEditingLimits(false); setClearConfirm(false); setAddingTask(false); setTaskText(""); setMoreOpen(false);
+    setSelected(id); setSelectionReview(false); setEditing(false); setEditingLimits(false); setClearConfirm(false); setCompleteOpen(false); setAddingTask(false); setTaskText(""); setMoreOpen(false);
   }
   async function action(name: string, fields: Record<string, unknown> = {}) {
     if ((goal && isCurrentSession(goal)) || disabled || ((name === "start" || name === "resume") && (!executionAvailable || budgetExhausted))) return false;
@@ -333,18 +336,39 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       {/* Pi asks for confirmation before either change. Editing needs Pi to be idle. */}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {button("Edit", () => { setSelected(goal.id); setEditing(true); })}
+        {button("Mark complete", () => { setSelected(goal.id); setCompleteOpen(true); })}
         {button("Clear goal", () => { void chatGoalAction("clear"); })}
       </View>
     </View> : null}
     {moreOpen && !goal.assigned && !terminal(goal) ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {button("Edit", () => { setSelected(goal.id); setEditing(true); }, disabled || goal.status === "active")}
+        {button("Mark complete", () => { setSelected(goal.id); setCompleteOpen(true); }, disabled || goal.status === "active")}
         {button("Clear goal", () => { setSelected(goal.id); setClearRevision(goal.revision); setClearConfirm(true); }, disabled || goal.status === "active")}
       </View>
+      {goal.status === "active" ? <Metadata colors={colors}>{t("Pause the goal to edit, complete or clear it")}</Metadata> : null}
       {renderReview?.(goal)}
     </View> : null}
     {!goal.assigned && !executionAvailable && !terminal(goal) ? <Metadata colors={colors}>{t("Start and Resume are unavailable in this session")}</Metadata>
       : !goal.assigned && budgetExhausted && goal.status !== "active" && !terminal(goal) ? <Metadata colors={colors}>{t("Raise or remove the token budget before resuming")}</Metadata> : null}
+    {completeOpen && !terminal(goal) ? <Modal title={t("Mark goal complete?")} open onOpenChange={setCompleteOpen}><Modal.Content><View style={{ gap: 16 }}>
+      <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{goal.text}</Text>
+      <Metadata colors={colors}>{t("This overrides open tasks and completion conditions, such as unmerged PRs. Open tasks are marked done.")}</Metadata>
+      <TextInput accessibilityLabel={t("Completion summary")} placeholder={t("Why is it complete?")} placeholderTextColor={colors.foregroundMuted}
+        value={completeSummary} onChangeText={setCompleteSummary} multiline maxLength={2000} editable={!disabled}
+        style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface2, color: colors.foreground, paddingHorizontal: 12, paddingVertical: 12, fontSize: 14, lineHeight: 20, minHeight: 72, textAlignVertical: "top" }} />
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {button("Cancel", () => setCompleteOpen(false))}
+        {button("Mark complete", () => {
+          const summary = completeSummary.trim();
+          // This chat's goal: Pi pauses it if needed and asks for confirmation in the chat.
+          const done = goal.assigned
+            ? post({ operation: "start", action: "goal.complete", ...chatGoalIdentity, summary }).then(result => !!result)
+            : action("complete", { summary });
+          void done.then(ok => { if (ok) { setCompleteOpen(false); setCompleteSummary(""); } });
+        }, disabled || !completeSummary.trim() || (!goal.assigned && goal.status === "active"))}
+      </View>
+    </View></Modal.Content></Modal> : null}
     {clearConfirm && !goal.assigned ? <Modal title={t("Clear goal?")} open onOpenChange={setClearConfirm}><Modal.Content><View style={{ gap: 16 }}>
       <Text selectable style={{ color: colors.foreground, fontSize: 14, lineHeight: 20 }}>{goal.text}</Text>
       <Metadata colors={colors}>{t("Clearing does not mark the goal complete. Its checklist remains in History.")}</Metadata>
