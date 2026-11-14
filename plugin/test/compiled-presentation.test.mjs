@@ -103,7 +103,7 @@ test('compiled unsupported Goals shows read-only legacy state and history with r
   assert.equal(trees.some(n=>n.type==='Text' && /No .*worktrees|No Git repositories/.test(String(n.props.children))),false,'failed inventory is not rendered as complete empty inventory');
   reply.snapshot.worktreeError='Permission denied reading repository';
   trees=drawTrees();
-  assert.ok(trees.some(n=>n.type==='Text' && n.props.children==="Some worktrees couldn't be listed and were skipped."),'other inventory errors are reported');
+  assert.ok(trees.some(n=>n.type==='Text' && n.props.children==="Some worktrees couldn't be listed."),'other inventory errors are reported');
   assert.equal(trees.some(n=>n.type==='Text' && /No .*worktrees|No Git repositories/.test(String(n.props.children))),false,'a partial inventory is not rendered as complete empty inventory');
   assert.equal(trees.some(n=>n.type==='Text' && n.props.children===reply.snapshot.worktreeError),false,'the raw error waits behind Show');
   const show=trees.find(n=>n.type==='Pressable' && nodes(n.props.children).some(child=>child.type==='Text' && child.props.children==='Show'));

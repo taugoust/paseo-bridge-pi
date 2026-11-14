@@ -107,7 +107,7 @@ test("compiled Worktrees: explicit scope, branch identity, independent path link
     press(nodes, "This chat").props.onPress(); snapshot = original;
     snapshot.worktreeError = "Permission denied [synthetic]";
     nodes = await render();
-    assert.ok(nodes.some(n => n.type === "Text" && textOf(n) === "Some worktrees couldn't be listed and were skipped."), "a partial inventory says so");
+    assert.ok(nodes.some(n => n.type === "Text" && textOf(n) === "Some worktrees couldn't be listed."), "a partial inventory says so");
     assert.ok(!nodes.some(n => textOf(n) === snapshot.worktreeError), "the raw error waits behind Show");
     assert.equal(press(nodes, "Show").props.accessibilityState.expanded, false);
     press(nodes, "Show").props.onPress(); nodes = await render();
