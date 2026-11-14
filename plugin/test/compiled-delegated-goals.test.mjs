@@ -390,7 +390,9 @@ test('saved, delegated and current-session goals share one list and goal page; a
 
 test('this chat\'s goal can be edited and cleared through Pi',async()=>{
  const h=harness(),calls=[];
- const props={registry:{version:1,revision:1,entries:[]},assignedGoal:entry('own','paused'),colors,identity:'chat-goal-edit-clear',locked:false,busy:false,executionAvailable:true,model:null,limits:{automaticTurns:null,noProgressTurns:null},post:async f=>{calls.push(f);return {snapshot:{}};}};
+ // Requests must pass the real request schema, the way the server checks them.
+ const valid=fields=>schemas.workflowRequestSchema.safeParse({sessionId:'session',serviceEpoch:'11111111-1111-4111-8111-111111111111',requestId:'22222222-2222-4222-8222-222222222222',...fields});
+ const props={registry:{version:1,revision:1,entries:[]},assignedGoal:{...entry('own','paused'),activationId:'activation-1'},colors,identity:'chat-goal-edit-clear',locked:false,busy:false,executionAvailable:true,model:null,limits:{automaticTurns:null,noProgressTurns:null},post:async f=>{calls.push(f);return {snapshot:{}};}};
  let nodes=h.draw(props);button(nodes,'Goal own').props.onPress();nodes=h.draw(props);
  assert.equal(button(nodes,'Edit'),undefined,'Edit and Clear wait behind ···');
  button(nodes,'···').props.onPress();nodes=h.draw(props);
@@ -398,13 +400,14 @@ test('this chat\'s goal can be edited and cleared through Pi',async()=>{
  button(nodes,'Clear goal').props.onPress();await tick();
  assert.equal(calls.length,1);assert.equal(calls[0].action,'goal.clear');assert.equal(calls[0].operation,'start');
  assert.equal(calls[0].expectedGoalId,h.assignedTickets(props.assignedGoal)[0].sourceGoalId,'Pi checks the goal did not change');
+ assert.equal(calls[0].expectedActivationId,'activation-1');assert.equal(calls[0].expectedGoalRevision,2);assert.equal(valid(calls[0]).success,true,JSON.stringify(valid(calls[0]).error?.issues));
  nodes=h.draw(props);button(nodes,'Edit').props.onPress();nodes=h.draw(props);
  assert.ok(textbox(nodes,'Goal objective'));assert.ok(textbox(nodes,'Goal token budget'));
  assert.equal(textbox(nodes,'Goal automatic responses'),undefined,'limits stay in Edit limits for this chat\'s goal');
  textbox(nodes,'Goal objective').props.onChangeText('Sharper objective');nodes=h.draw(props);
  button(nodes,'Save changes').props.onPress();await tick();
  assert.equal(calls[1].action,'goal.edit');assert.equal(calls[1].objective,'Sharper objective');
- assert.equal(calls[1].expectedGoalId,calls[0].expectedGoalId);assert.equal('tokenBudget' in calls[1],false,'an unchanged empty budget is left alone');
+ assert.equal(calls[1].expectedGoalId,calls[0].expectedGoalId);assert.equal(valid(calls[1]).success,true,JSON.stringify(valid(calls[1]).error?.issues));assert.equal('tokenBudget' in calls[1],false,'an unchanged empty budget is left alone');
 });
 
 for (const assigned of [false,true]) for (const status of ['active','paused']) test(`dedicated limits editor preserves scope for ${assigned?'assigned':'delegated'} ${status} goals`,async()=>{

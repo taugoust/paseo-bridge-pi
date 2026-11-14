@@ -275,6 +275,8 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
     </View>;
   }
 
+  // Pi refuses the action if this chat's goal moved on since the page was drawn.
+  const chatGoalIdentity = { expectedGoalId: goal.sourceGoalId, expectedActivationId: goal.activationId, expectedGoalRevision: goal.revision };
   // Editing the objective replaces the page with the form.
   if (editing) return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 16 }}>
     {back}
@@ -283,7 +285,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       onCancel={() => setEditing(false)} onSubmit={async (objective, tokenBudget, openedRevision, continuationLimits) => {
         // This chat's goal: Pi edits it and asks for confirmation first.
         const ok = goal.assigned
-          ? !!(await post({ operation: "start", action: "goal.edit", expectedGoalId: goal.sourceGoalId, objective,
+          ? !!(await post({ operation: "start", action: "goal.edit", ...chatGoalIdentity, objective,
             ...(tokenBudget === undefined ? {} : { tokenBudget }) }))
           : await action("edit", { objective, expectedEntryRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
         if (ok) setEditing(false); return ok;
@@ -299,7 +301,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   // This chat's own goal: Pi pauses or resumes it, and asks for confirmation before resuming.
   const chatGoalAction = async (name: "pause" | "resume" | "clear") => {
     if (disabled || !goal.assigned) return;
-    await post({ operation: "start", action: `goal.${name}`, expectedGoalId: goal.sourceGoalId });
+    await post({ operation: "start", action: `goal.${name}`, ...chatGoalIdentity });
   };
   // Older sessions can't run these actions, so their goals stay read-only.
   const actions = goal.assigned && !terminal(goal) && !locked ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>

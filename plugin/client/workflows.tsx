@@ -30,11 +30,11 @@ type Memory = {
 	binding?: string;
 	answers: Record<string, string>;
 	pending: boolean;
-	uncertain: boolean;
 	error?: string;
 	sequence: number;
 	worktreeView: WorktreeView;
 	refreshed: number;
+	// Query sequence at the last failed action. Controls wait for a newer state.
 	failedAt: number;
 };
 const memories = new Map<string, Memory>();
@@ -96,7 +96,6 @@ function WorkflowsView({
 			item = {
 				answers: {},
 				pending: false,
-				uncertain: false,
 				sequence: 0,
 				worktreeView: "session",
 				refreshed: 0,
@@ -132,7 +131,6 @@ function WorkflowsView({
 					saved.binding &&
 					saved.binding !== next &&
 					!saved.pending &&
-					!saved.uncertain &&
 					!result.snapshot.operationId
 				) {
 					if (JSON.parse(saved.binding)[0] !== result.sessionId) {
@@ -169,7 +167,10 @@ function WorkflowsView({
 					])
 				: undefined;
 	const current = !!binding && binding === saved.binding && !query.isError,
-		locked = !current || saved.pending || saved.uncertain,
+		// A reply lost on the way may hide an action that did happen. Wait for the
+		// refreshed state before allowing another one.
+		staleAfterFailure = saved.failedAt > 0 && saved.refreshed <= saved.failedAt,
+		locked = !current || saved.pending || staleAfterFailure,
 		goal = snapshot?.goal,
 		dialog = snapshot?.dialog,
 		colors = theme.colors,
@@ -181,7 +182,6 @@ function WorkflowsView({
 		if (
 			locked ||
 			saved.pending ||
-			saved.uncertain ||
 			!snapshot ||
 			!data?.runtimeEpoch ||
 			!data.sessionId
@@ -216,11 +216,14 @@ function WorkflowsView({
 				else onOpenWorkspace?.(result.openedWorkspaceId);
 			}
 			return result;
-		} catch {
-			saved.uncertain = true;
+		} catch (error) {
+			// Show Pi's reason, then refresh. Controls unlock once the new state is in.
 			saved.failedAt = saved.sequence;
 			saved.error =
-				"The action may have completed. Review the automatically updated state before another action.";
+				error instanceof Error && error.message
+					? error.message
+					: "The action failed. Check the refreshed state before trying again.";
+			void query.refetch();
 			return false;
 		} finally {
 			saved.pending = false;
@@ -461,7 +464,6 @@ function WorkflowsView({
 						"Connect current session",
 						() => {
 							saved.binding = binding;
-							saved.uncertain = false;
 							saved.error = undefined;
 							saved.answers = {};
 							redraw();
@@ -481,19 +483,6 @@ function WorkflowsView({
 							{saved.error}
 						</Text>
 					) : null}
-					{saved.uncertain
-						? button(
-								"I reviewed the refreshed status",
-								() => {
-									saved.uncertain = false;
-									saved.error = undefined;
-									redraw();
-								},
-								saved.pending ||
-									saved.refreshed <= saved.failedAt ||
-									query.isFetching,
-							)
-						: null}
 					{snapshot.notice ? (
 						<Text
 							selectable
