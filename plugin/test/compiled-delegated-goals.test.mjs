@@ -370,22 +370,41 @@ test('saved, delegated and current-session goals share one list and goal page; a
  assert.equal(draft.sourceId,'draft');assert.equal(draft.reactKey,'catalog:draft');assert.equal(draft.binding,'unassigned');assert.equal(running.binding,'subagent');
  assert.notEqual(h.savedPresentation(entry('parent')).reactKey,current.reactKey,'Source identity must not collide with a React selection key');
  button(nodes,'Goal parent').props.onPress();nodes=h.draw(props);
- // This chat's own goal can only be paused or resumed. Nothing else on it is editable.
+ // This chat's own goal: Pause or Resume, and Edit and Clear in the ··· menu (covered below).
  const readOnly=(nodes,allowed=[])=>{
   for(const label of ['Start','Resume','Edit','Pause','Clear','Clear goal','···','Save task'].filter(label=>!allowed.includes(label)))assert.equal(button(nodes,label),undefined,label);
   for(const text of ['Add task','Pause the goal to add tasks','50-task limit reached'])assert.equal(JSON.stringify(nodes).includes(JSON.stringify(text)),false,text);
   assert.equal(textbox(nodes,'Subtask'),undefined);
  };
- readOnly(nodes,['Resume']);
+ readOnly(nodes,['Resume','···']);
  assert.ok(button(nodes,'Resume'),'a paused goal of this chat can be resumed from its page');
  assert.ok(nodes.some(n=>n.type==='Text'&&joined(n)==='This chat'),'the owner line names the current chat');
  for(const title of ['Activity','Questions','Details'])assert.ok(section(nodes,title),title);
  assert.ok(nodes.some(n=>n.props.accessibilityRole==='progressbar'&&n.props.accessibilityValue.now===1));
- nodes=openSection(h,props,'Questions');readOnly(nodes,['Resume']);assert.equal(button(nodes,'Submit answers'),undefined);
+ nodes=openSection(h,props,'Questions');readOnly(nodes,['Resume','···']);assert.equal(button(nodes,'Submit answers'),undefined);
  assert.ok(nodes.some(n=>n.props.children==='No recorded questions available for this assigned goal'));
  button(nodes,'Back to goals').props.onPress();nodes=h.draw(props);completedHeading(nodes).props.onPress();nodes=h.draw(props);
  button(nodes,'Old assigned goal').props.onPress();nodes=openSection(h,props,'Details');
  assert.ok(nodes.some(n=>n.props.children==='Recorded summary'));readOnly(nodes);assert.equal(button(nodes,'Edit limits'),undefined,'finished goals have no limit editor');assert.deepEqual(calls,[]);
+});
+
+test('this chat\'s goal can be edited and cleared through Pi',async()=>{
+ const h=harness(),calls=[];
+ const props={registry:{version:1,revision:1,entries:[]},assignedGoal:entry('own','paused'),colors,identity:'chat-goal-edit-clear',locked:false,busy:false,executionAvailable:true,model:null,limits:{automaticTurns:null,noProgressTurns:null},post:async f=>{calls.push(f);return {snapshot:{}};}};
+ let nodes=h.draw(props);button(nodes,'Goal own').props.onPress();nodes=h.draw(props);
+ assert.equal(button(nodes,'Edit'),undefined,'Edit and Clear wait behind ···');
+ button(nodes,'···').props.onPress();nodes=h.draw(props);
+ assert.ok(button(nodes,'Edit'));
+ button(nodes,'Clear goal').props.onPress();await tick();
+ assert.equal(calls.length,1);assert.equal(calls[0].action,'goal.clear');assert.equal(calls[0].operation,'start');
+ assert.equal(calls[0].expectedGoalId,h.assignedTickets(props.assignedGoal)[0].sourceGoalId,'Pi checks the goal did not change');
+ nodes=h.draw(props);button(nodes,'Edit').props.onPress();nodes=h.draw(props);
+ assert.ok(textbox(nodes,'Goal objective'));assert.ok(textbox(nodes,'Goal token budget'));
+ assert.equal(textbox(nodes,'Goal automatic responses'),undefined,'limits stay in Edit limits for this chat\'s goal');
+ textbox(nodes,'Goal objective').props.onChangeText('Sharper objective');nodes=h.draw(props);
+ button(nodes,'Save changes').props.onPress();await tick();
+ assert.equal(calls[1].action,'goal.edit');assert.equal(calls[1].objective,'Sharper objective');
+ assert.equal(calls[1].expectedGoalId,calls[0].expectedGoalId);assert.equal('tokenBudget' in calls[1],false,'an unchanged empty budget is left alone');
 });
 
 for (const assigned of [false,true]) for (const status of ['active','paused']) test(`dedicated limits editor preserves scope for ${assigned?'assigned':'delegated'} ${status} goals`,async()=>{

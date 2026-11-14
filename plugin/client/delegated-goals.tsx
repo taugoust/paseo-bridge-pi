@@ -63,8 +63,10 @@ function useViewState<T,>(identity: string, name: string, initial: T) {
   }] as const;
 }
 const editRevision = (goal: Ticket | undefined, limitsOnly: boolean) => limitsOnly ? goal?.policyRevision : goal?.revision;
-function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, onCancel, onSubmit }: {
+function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, hideLimits = false, onCancel, onSubmit }: {
   colors: PresentationColors; draftKey: string; goal?: Ticket; locked: boolean; limitsOnly?: boolean;
+  // This chat's goal edits its limits separately, through Edit limits.
+  hideLimits?: boolean;
   limits: Props["limits"];
   onCancel?: () => void; onSubmit(objective: string, tokenBudget: number | undefined, openedRevision: number | undefined, continuationLimits: { automaticTurns: number | null; noProgressTurns: number | null }, tasks: string[]): Promise<boolean>;
 }) {
@@ -126,14 +128,14 @@ function GoalForm({ colors, draftKey, goal, locked, limits, limitsOnly = false, 
         {t(state.budgetError ?? (goal ? "Applies to this goal only" : "Created paused • Choose Start when ready"))}
       </Metadata>
     </View>
-    <View style={{ gap: limitsOnly ? 8 : 12, ...(!limitsOnly ? { maxWidth: 400 } : {}) }}>
+    {hideLimits ? null : <View style={{ gap: limitsOnly ? 8 : 12, ...(!limitsOnly ? { maxWidth: 400 } : {}) }}>
       {([ ["Automatic responses", "automaticTurns", form.setAutomaticTurns], ["No-progress responses", "noProgressTurns", form.setNoProgressTurns] ] as const).map(([label, key, set]) => <View key={key} style={{ gap: 8 }}>
         <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "500" }}>{t(label)}</Text>
         <TextInput accessibilityLabel={t(`Goal ${label.toLowerCase()}`)} placeholder={t("Default: {{value}}",{value:limits[key] ?? t("Unlimited")})} placeholderTextColor={colors.foregroundMuted}
           value={state[key]} onChangeText={set} keyboardType="numeric" maxLength={16} editable={!locked} style={input} />
       </View>)}
       <Metadata colors={colors} alert={!!state.limitsError}>{t(state.limitsError ?? (limitsOnly ? "Blank limits inherit configured defaults. Counters are preserved; exceeded limits pause at the next safe boundary." : "Leave empty to use the configured defaults"))}</Metadata>
-    </View>
+    </View>}
     {stale ? <Metadata colors={colors} alert style={{ color: colors.statusWarning }}>{t("This goal changed while you were editing. Cancel and reopen it to review the latest version.")}</Metadata> : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       <NativeButton colors={colors} primary label={goal ? "Save changes" : "Create"} disabled={locked || stale || !state.canSubmit}
@@ -274,11 +276,16 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   }
 
   // Editing the objective replaces the page with the form.
-  if (editing && !goal.assigned) return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 16 }}>
+  if (editing) return <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ minWidth: 0, gap: 16 }}>
     {back}
     <GoalForm key={`${identity}/edit/${goal.id}`} draftKey={`${identity}/edit/${goal.id}`} colors={colors} goal={goal} locked={disabled} limits={limits}
+      hideLimits={goal.assigned}
       onCancel={() => setEditing(false)} onSubmit={async (objective, tokenBudget, openedRevision, continuationLimits) => {
-        const ok = await action("edit", { objective, expectedEntryRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
+        // This chat's goal: Pi edits it and asks for confirmation first.
+        const ok = goal.assigned
+          ? !!(await post({ operation: "start", action: "goal.edit", expectedGoalId: goal.sourceGoalId, objective,
+            ...(tokenBudget === undefined ? {} : { tokenBudget }) }))
+          : await action("edit", { objective, expectedEntryRevision: openedRevision, tokenBudget: tokenBudget ?? null, continuationLimits });
         if (ok) setEditing(false); return ok;
       }} />
   </View>;
@@ -290,7 +297,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   const story = [...(goal.story?.timeline ?? []), ...(goal.story?.activity ?? [])].sort((a, b) => a.at - b.at);
   const owner = isCurrentSession(goal) ? t("This chat") : goal.child ? [t("Coordinator"), goal.child.model].filter(Boolean).join(" · ") : t("Saved");
   // This chat's own goal: Pi pauses or resumes it, and asks for confirmation before resuming.
-  const chatGoalAction = async (name: "pause" | "resume") => {
+  const chatGoalAction = async (name: "pause" | "resume" | "clear") => {
     if (disabled || !goal.assigned) return;
     await post({ operation: "start", action: `goal.${name}`, expectedGoalId: goal.sourceGoalId });
   };
@@ -298,6 +305,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
   const actions = goal.assigned && !terminal(goal) && !locked ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
     {goal.status === "active" ? button("Pause", () => { void chatGoalAction("pause"); })
       : button("Resume", () => { void chatGoalAction("resume"); })}
+    <NativeButton colors={colors} label="···" onPress={() => setMoreOpen(!moreOpen)} style={small} />
   </View> : !goal.assigned && !terminal(goal) ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
     {goal.status === "active" ? button("Pause", () => { void action("pause"); })
       : button(goal.child ? "Resume" : "Start", () => { void action(goal.child ? "resume" : "start"); }, disabled || !executionAvailable || budgetExhausted)}
@@ -319,6 +327,13 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       <View style={{ flex: narrow ? undefined : 1, minWidth: 0 }}><TaskBar colors={colors} tasks={tasks} /></View>
       {actions}
     </View>
+    {moreOpen && goal.assigned && !terminal(goal) && !locked ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
+      {/* Pi asks for confirmation before either change. Editing needs Pi to be idle. */}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {button("Edit", () => { setSelected(goal.id); setEditing(true); })}
+        {button("Clear goal", () => { void chatGoalAction("clear"); })}
+      </View>
+    </View> : null}
     {moreOpen && !goal.assigned && !terminal(goal) ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {button("Edit", () => { setSelected(goal.id); setEditing(true); }, disabled || goal.status === "active")}
