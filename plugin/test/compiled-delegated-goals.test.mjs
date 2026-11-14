@@ -407,7 +407,18 @@ test('this chat\'s goal can be edited and cleared through Pi',async()=>{
  textbox(nodes,'Goal objective').props.onChangeText('Sharper objective');nodes=h.draw(props);
  button(nodes,'Save changes').props.onPress();await tick();
  assert.equal(calls[1].action,'goal.edit');assert.equal(calls[1].objective,'Sharper objective');
- assert.equal(calls[1].expectedGoalId,calls[0].expectedGoalId);assert.equal(valid(calls[1]).success,true,JSON.stringify(valid(calls[1]).error?.issues));assert.equal('tokenBudget' in calls[1],false,'an unchanged empty budget is left alone');
+ assert.equal(calls[1].expectedGoalId,calls[0].expectedGoalId);assert.equal(valid(calls[1]).success,true,JSON.stringify(valid(calls[1]).error?.issues));
+ // Mark complete: the user's override with a summary, for this chat's goal and saved goals.
+ nodes=h.draw(props);if(!button(nodes,'Mark complete')){button(nodes,'···').props.onPress();nodes=h.draw(props);}
+ button(nodes,'Mark complete').props.onPress();nodes=h.draw(props);
+ // The modal's button comes after the menu's.
+ const confirm=()=>nodes.filter(n=>n.type==='Pressable'&&n.props.accessibilityLabel==='Mark complete').at(-1);
+ assert.equal(confirm().props.disabled,true,'a summary is required');
+ textbox(nodes,'Completion summary').props.onChangeText('Built and verified by hand');nodes=h.draw(props);
+ confirm().props.onPress();await tick();
+ const done=calls.at(-1);assert.equal(done.action,'goal.complete');assert.equal(done.summary,'Built and verified by hand');
+ assert.equal(valid(done).success,true,JSON.stringify(valid(done).error?.issues));
+ assert.equal(valid({operation:'start',action:'goals.complete',expectedGoalId:'11111111-1111-4111-8111-111111111111',expectedEntryRevision:2,summary:'Done'}).success,true,'saved goals can be marked complete');assert.equal('tokenBudget' in calls[1],false,'an unchanged empty budget is left alone');
 });
 
 for (const assigned of [false,true]) for (const status of ['active','paused']) test(`dedicated limits editor preserves scope for ${assigned?'assigned':'delegated'} ${status} goals`,async()=>{
