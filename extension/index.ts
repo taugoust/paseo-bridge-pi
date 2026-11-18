@@ -36,6 +36,7 @@ import {
 } from "./permission-gate-operator.js";
 import { foregroundTasksSocketPath, removeForegroundTasksDescriptor, writeForegroundTasksDescriptor } from "./foreground-task-operator.js";
 import { accountControlsSocketPath, removeAccountControlsDescriptor, writeAccountControlsDescriptor } from "./account-controls-operator.js";
+import { subagentRoutingSocketPath, removeSubagentRoutingDescriptor, writeSubagentRoutingDescriptor } from "./subagent-routing-operator.js";
 import { btwSocketPath, removeBtwDescriptor, writeBtwDescriptor } from "./btw-operator.js";
 import { workflowsSocketPath, removeWorkflowsDescriptor, writeWorkflowsDescriptor } from "./workflows-operator.js";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
@@ -1134,6 +1135,27 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   function revokeAccountControlsDescriptor() {
     if (transport && currentAgentId) removeAccountControlsDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch);
   }
+  function activeSubagentRoutingService() {
+    const service = (globalThis as Record<string, any>).__paeSubagentRoutingV1;
+    const sessionId = latestCtx?.sessionManager.getSessionId();
+    if (!service || service.protocol !== 1 || typeof service.sessionId !== "string" || typeof service.serviceEpoch !== "string"
+      || typeof service.getSnapshot !== "function" || typeof service.set !== "function" || !sessionId || service.sessionId !== sessionId) return undefined;
+    return service;
+  }
+  function activeSubagentRoutingDescriptor() {
+    const t = transport, ctx = latestCtx, agentId = currentAgentId, service = activeSubagentRoutingService();
+    if (!t || !t.connected || !ctx || !agentId || !service || currentSessionFile !== t.sessionFile) return undefined;
+    return { version: 1 as const, socketPath: subagentRoutingSocketPath(t.pipePath), capability: t.subagentRoutingCapability,
+      agentId, sessionId: ctx.sessionManager.getSessionId(), runtimeEpoch: t.operatorEpoch, serviceEpoch: service.serviceEpoch };
+  }
+  function publishSubagentRoutingDescriptor() {
+    const descriptor = activeSubagentRoutingDescriptor();
+    if (!descriptor) { revokeSubagentRoutingDescriptor(); return; }
+    try { writeSubagentRoutingDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), descriptor); } catch { revokeSubagentRoutingDescriptor(); }
+  }
+  function revokeSubagentRoutingDescriptor() {
+    if (transport && currentAgentId) removeSubagentRoutingDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), currentAgentId, transport.operatorEpoch);
+  }
 
   function bindTransport(): void {
     transport?.bind({
@@ -1301,6 +1323,32 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         assertCurrent();
         return result;
       },
+      subagentRoutingIdentity() {
+        const descriptor = activeSubagentRoutingDescriptor();
+        return descriptor ? { ...descriptor, capability: transport!.subagentRoutingCapability } : undefined;
+      },
+      async subagentRouting(request: any) {
+        const service = activeSubagentRoutingService(), identity = activeSubagentRoutingDescriptor(), t = transport;
+        if (!service || !identity || !t) throw new Error("Subagent-routing service unavailable or stale");
+        const assertCurrent = () => {
+          if (transport !== t || (globalThis as any).__paeSubagentRoutingV1 !== service || activeSubagentRoutingService() !== service || !t.connected
+            || currentAgentId !== identity.agentId || currentSessionFile !== t.sessionFile || latestCtx?.sessionManager.getSessionId() !== identity.sessionId || t.operatorEpoch !== identity.runtimeEpoch)
+            throw new Error("Subagent-routing identity changed during request");
+        };
+        let result: unknown;
+        if (request?.operation === "snapshot" && request.sessionId === identity.sessionId)
+          result = await service.getSnapshot({ sessionId: identity.sessionId });
+        else if (request?.operation === "providers" && request.sessionId === identity.sessionId) {
+          const ctx = latestCtx;
+          if (!ctx) throw new Error("Subagent-routing session unavailable");
+          result = [...new Set(ctx.modelRegistry.getAll().filter((model: any) => model.api !== "pi-virtual").map((model: any) => model.provider))].sort();
+        } else if (request?.operation === "set" && request.request?.expectedSessionId === identity.sessionId
+          && request.request?.expectedServiceEpoch === identity.serviceEpoch)
+          result = await service.set(request.request);
+        else throw new Error("Invalid subagent-routing operation");
+        assertCurrent();
+        return result;
+      },
       foregroundTasksIdentity() {
         const descriptor = activeForegroundTasksDescriptor();
         const service = activeForegroundTasksService();
@@ -1364,6 +1412,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         publishHarnessReadOnlyDescriptor();
         publishForegroundTasksDescriptor();
         publishAccountControlsDescriptor();
+        publishSubagentRoutingDescriptor();
         providerReconnect.connected();
         debugLog("client connected");
         notifyTui("Paseo attached to this session");
@@ -1374,6 +1423,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         revokeHarnessReadOnlyDescriptor();
         revokeForegroundTasksDescriptor();
         revokeAccountControlsDescriptor();
+        revokeSubagentRoutingDescriptor();
         revokeBtwDescriptor();
         revokeWorkflowsDescriptor();
         for (const reject of [...pendingCommandReplies.values()]) reject("Paseo controller disconnected before the command completed; its outcome is unknown.");
@@ -1393,6 +1443,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     revokeHarnessReadOnlyDescriptor();
     revokeForegroundTasksDescriptor();
     revokeAccountControlsDescriptor();
+    revokeSubagentRoutingDescriptor();
     revokeBtwDescriptor();
     revokeWorkflowsDescriptor();
     providerReconnect.stop();
@@ -1766,6 +1817,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         publishHarnessReadOnlyDescriptor();
         publishForegroundTasksDescriptor();
         publishAccountControlsDescriptor();
+        publishSubagentRoutingDescriptor();
         startCanonicalNameSync();
         if (!placement.infrastructure && !currentAgentId) registerWithPaseo(currentSessionFile, latestCtx.cwd);
         tagAgentPane(placement);
@@ -1800,6 +1852,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       revokeHarnessReadOnlyDescriptor();
       revokeForegroundTasksDescriptor();
       revokeAccountControlsDescriptor();
+      revokeSubagentRoutingDescriptor();
       revokeBtwDescriptor();
       revokeWorkflowsDescriptor();
       providerReconnect.stop();

@@ -18,6 +18,7 @@ import {
 	type AccountControlsSnapshot,
 } from "../shared/account-controls";
 import type { Colors } from "./activity-dashboard";
+import { SubagentRoutingSection } from "./subagent-routing";
 
 type Agent = {
 	id: string;
@@ -53,6 +54,7 @@ function registerChatAccountControls(client: PluginClientContext) {
 			return <View style={{ width: 340, maxWidth: "100%", padding: 12 }}>
 				<Metadata colors={props.theme.colors}>This chat and inheriting descendants only. Parent and sibling chats are unchanged.</Metadata>
 				<ProviderAccountSection key={`${props.host.id}/${props.agentId}`} agentId={props.agentId} workspaceId={props.workspaceId} hostId={props.host.id} colors={props.theme.colors} onBinding={() => {}} />
+				<SubagentRoutingSection key={`subagents/${props.host.id}/${props.agentId}`} agentId={props.agentId} workspaceId={props.workspaceId} hostId={props.host.id} colors={props.theme.colors} />
 			</View>;
 		};
 		const button = client.addComposerPill({ id: "pi-codex-account", workspaceId: agent.workspaceId, agentId: agent.id,

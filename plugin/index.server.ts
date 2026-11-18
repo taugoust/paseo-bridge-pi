@@ -17,6 +17,8 @@ import { createWorkflowsHandlers } from "./server/workflows";
 import { workflowsStatusRpc, workflowsControlRpc, workflowsReviewRpc } from "./shared/workflows";
 import { btwStatusRpc, btwControlRpc } from "./shared/btw";
 import { accountControlsStatusRpc, accountControlsSwitchRpc } from "./shared/account-controls";
+import { subagentRoutingStatusRpc, subagentRoutingSetRpc } from "./shared/subagent-routing";
+import { createSubagentRoutingHandlers } from "./server/subagent-routing";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(workSourceSettings);
@@ -47,5 +49,8 @@ export default function contribute(server: PluginServerContext) {
   const accountControls = createAccountControlsHandlers();
   server.handle(accountControlsStatusRpc, accountControls.status);
   server.handle(accountControlsSwitchRpc, accountControls.switch);
+  const subagentRouting = createSubagentRoutingHandlers();
+  server.handle(subagentRoutingStatusRpc, subagentRouting.status);
+  server.handle(subagentRoutingSetRpc, subagentRouting.set);
   return registerIndependentAgents(server);
 }

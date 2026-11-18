@@ -10,6 +10,12 @@ This plugin targets the `pi-integration` branch of `taugoust/paseo`. Its compile
 
 The pill is registered against each non-archived Pi agent's `agentId` and workspace. The daemon and Pi must run as the same Unix user; Windows daemon hosts are not supported. Changes apply to the selected agent and its children; underlying authorization and sandbox policy remain mandatory. Its label reports `On`, `Off`, `unavailable`, or a checking state. The popover reads current state, disables controls when state is stale/unavailable or an operation is busy, and sends explicit `enabled: true` or `enabled: false` requests. Status failures never imply a mode. No model prompt, chat message, abort, or slash command is used.
 
+## Subagent provider choice
+
+Pi sessions expose a separate **Subagents** provider and account choice in the companion `paseo-accounts` panel. The explicit chat account contribution supports it too. It defaults to following the session and shows any saved override. Only new subagents use a changed choice. Named accounts are available for `openai-codex` only. Clearing the choice restores session-following without changing the main session account.
+
+This requires the protocol 1 `__paeSubagentRoutingV1` service from [pi-agent-extensions#70](https://github.com/taugoust/pi-agent-extensions/pull/70). Older extensions hide the control. The bridge discovers physical providers from Pi and relays bounded requests through a separate private operator socket and `.subagents.json` descriptor. Writes bind session, runtime, service epoch and revision. Rejected writes refresh state for review rather than blindly retrying.
+
 ## Access mode and composer layout
 
 On the patched Paseo server, Pi's existing native mode selector beside thinking displays **Dangerous ask** (approval prompts on) or **Full access** (approval prompts off). Reads reflect the authoritative permission-gate service; only an explicit selection changes it. Existing sandbox/authorization policy stays active. Session/runtime-bound writes are read back, and unsupported runtimes expose no native modes. A renamed plugin control remains as a fallback until the active Pi bridge is reloaded; it disappears once both native modes are advertised.

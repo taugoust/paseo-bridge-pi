@@ -11,6 +11,7 @@ import {
 } from "./permission-gate-operator.js";
 import { decodeForegroundTasksFrame, foregroundTasksCapability, foregroundTasksSocketPath, validateForegroundTasksEnvelope, type ForegroundTasksAuthIdentityV1 } from "./foreground-task-operator.js";
 import { accountControlsCapability, accountControlsSocketPath, validateAccountControlsEnvelope } from "./account-controls-operator.js";
+import { subagentRoutingCapability, subagentRoutingSocketPath, validateSubagentRoutingEnvelope } from "./subagent-routing-operator.js";
 
 import { createBtwEndpoint, type BtwIdentity } from "./btw-operator.js";
 
@@ -30,6 +31,8 @@ type Callbacks = {
   foregroundTasks?(request: unknown): Promise<unknown>;
   accountControlsIdentity?(): { agentId: string; sessionId: string; runtimeEpoch: string; serviceEpoch: string; capability: string } | undefined;
   accountControls?(request: unknown): Promise<unknown>;
+  subagentRoutingIdentity?(): { agentId: string; sessionId: string; runtimeEpoch: string; serviceEpoch: string; capability: string } | undefined;
+  subagentRouting?(request: unknown): Promise<unknown>;
 };
 
 /** Socket ownership is independent of the replaceable extension context. */
@@ -52,6 +55,8 @@ export class BridgeTransport {
   get btwCapability(): string { return this._btwCapability ??= randomBytes(32).toString("hex"); }
   private accountControlsServer: net.Server | null = null;
   private accountControlsSockets = new Set<net.Socket>();
+  private subagentRoutingServer: net.Server | null = null;
+  private subagentRoutingSockets = new Set<net.Socket>();
   private client: net.Socket | null = null;
   private callbacks?: Callbacks;
   private closed = false;
@@ -69,7 +74,9 @@ export class BridgeTransport {
   get foregroundTasksCapability(): string { return this._foregroundTasksCapability ??= foregroundTasksCapability(); }
   private _accountControlsCapability?: string;
   get accountControlsCapability(): string { return this._accountControlsCapability ??= accountControlsCapability(); }
-  rotateOperatorEpoch(): void { this._workflowsCapability = randomBytes(32).toString("hex"); this._btwCapability = randomBytes(32).toString("hex"); this._operatorEpoch = randomUUID(); this._harnessReadOnlyCapability = randomBytes(32).toString("hex"); this._foregroundTasksCapability = foregroundTasksCapability(); this._accountControlsCapability = accountControlsCapability(); }
+  private _subagentRoutingCapability?: string;
+  get subagentRoutingCapability(): string { return this._subagentRoutingCapability ??= subagentRoutingCapability(); }
+  rotateOperatorEpoch(): void { this._workflowsCapability = randomBytes(32).toString("hex"); this._btwCapability = randomBytes(32).toString("hex"); this._operatorEpoch = randomUUID(); this._harnessReadOnlyCapability = randomBytes(32).toString("hex"); this._foregroundTasksCapability = foregroundTasksCapability(); this._accountControlsCapability = accountControlsCapability(); this._subagentRoutingCapability = subagentRoutingCapability(); }
 
   constructor(sessionFile: string, pipePath: string) {
     this.sessionFile = sessionFile;
@@ -87,6 +94,7 @@ export class BridgeTransport {
       this.ensureReadonlyEndpoint();
       this.ensureForegroundTasksEndpoint();
       this.ensureAccountControlsEndpoint();
+      this.ensureSubagentRoutingEndpoint();
     }
     if (this.connected) callbacks.attached();
   }
@@ -103,6 +111,7 @@ export class BridgeTransport {
     this.ensureReadonlyEndpoint();
     this.ensureForegroundTasksEndpoint();
     this.ensureAccountControlsEndpoint();
+    this.ensureSubagentRoutingEndpoint();
     this.server = net.createServer((socket) => this.attach(socket));
     this.server.on("error", (error) => this.callbacks?.error(error));
     this.server.listen(this.pipePath, () => {
@@ -331,6 +340,40 @@ export class BridgeTransport {
     this.accountControlsServer.listen(socketPath, () => { if (process.platform !== "win32") { try { fs.chmodSync(socketPath, 0o600); } catch {} } });
   }
 
+  private ensureSubagentRoutingEndpoint(): void {
+    this.subagentRoutingSockets ??= new Set<net.Socket>();
+    if (this.subagentRoutingServer || this.closed) return;
+    const socketPath = subagentRoutingSocketPath(this.pipePath);
+    if (process.platform !== "win32") { try { fs.unlinkSync(socketPath); } catch {} }
+    this.subagentRoutingServer = net.createServer((socket) => {
+      if (this.subagentRoutingSockets.size >= 8 || this.closed) { socket.destroy(); return; }
+      this.subagentRoutingSockets.add(socket); socket.on("close", () => this.subagentRoutingSockets.delete(socket));
+      socket.setTimeout(10_000, () => socket.destroy()); let buffer = Buffer.alloc(0); let received = false;
+      socket.on("data", (chunk: Buffer) => {
+        if (received || buffer.length + chunk.length > 32 * 1024) { socket.destroy(); return; }
+        buffer = Buffer.concat([buffer, chunk]); const newline = buffer.indexOf(0x0a); if (newline < 0) return;
+        received = true;
+        void (async () => {
+          let requestId: unknown = "invalid", response: any;
+          try {
+            const frame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, newline))); requestId = frame?.id ?? "invalid";
+            const identity = this.callbacks?.subagentRoutingIdentity?.(), execute = this.callbacks?.subagentRouting;
+            if (newline !== buffer.length - 1 || !identity || !execute || !validateSubagentRoutingEnvelope(frame, identity)) throw new Error("Subagent-routing authentication failed");
+            const data = await execute(frame.request);
+            const current = this.callbacks?.subagentRoutingIdentity?.();
+            if (!current || current.agentId !== identity.agentId || current.sessionId !== identity.sessionId || current.runtimeEpoch !== identity.runtimeEpoch
+              || current.serviceEpoch !== identity.serviceEpoch || current.capability !== identity.capability) throw new Error("Subagent-routing identity changed during request");
+            response = { v: 1, type: "subagent_routing", id: requestId, success: true, agentId: identity.agentId, sessionId: identity.sessionId, runtimeEpoch: identity.runtimeEpoch, serviceEpoch: identity.serviceEpoch, data };
+          } catch (error) { response = { v: 1, type: "subagent_routing", id: requestId, success: false, error: error instanceof Error ? error.message.replace(/[\r\n\x00-\x1f\x7f]+/g, " ").slice(0, 250) : "Subagent-routing request failed" }; }
+          const output = `${JSON.stringify(response)}\n`;
+          if (Buffer.byteLength(output) <= 128 * 1024) socket.end(output); else socket.end(`${JSON.stringify({ v: 1, type: "subagent_routing", id: requestId, success: false, error: "Oversized subagent-routing response" })}\n`);
+        })();
+      });
+    });
+    this.subagentRoutingServer.on("error", (error) => this.callbacks?.error(error));
+    this.subagentRoutingServer.listen(socketPath, () => { if (process.platform !== "win32") { try { fs.chmodSync(socketPath, 0o600); } catch {} } });
+  }
+
   private ensureForkSnapshotEndpoint(): void {
     if (this.snapshotServer || this.closed) return;
     // A separate read-only endpoint never takes over Paseo's controller socket.
@@ -383,6 +426,10 @@ export class BridgeTransport {
     this.btwEndpoint = undefined;
     this.accountControlsServer?.close();
     this.accountControlsServer = null;
+    this.subagentRoutingServer?.close();
+    this.subagentRoutingServer = null;
+    for (const socket of this.subagentRoutingSockets ?? []) socket.destroy();
+    this.subagentRoutingSockets?.clear();
     for (const socket of this.accountControlsSockets ?? []) socket.destroy();
     this.accountControlsSockets?.clear();
     for (const socket of this.foregroundTasksSockets ?? []) socket.destroy();
@@ -398,6 +445,7 @@ export class BridgeTransport {
       try { fs.unlinkSync(`${this.pipePath}.harness-readonly`); } catch {}
       try { fs.unlinkSync(foregroundTasksSocketPath(this.pipePath)); } catch {}
       try { fs.unlinkSync(accountControlsSocketPath(this.pipePath)); } catch {}
+      try { fs.unlinkSync(subagentRoutingSocketPath(this.pipePath)); } catch {}
     }
   }
 
