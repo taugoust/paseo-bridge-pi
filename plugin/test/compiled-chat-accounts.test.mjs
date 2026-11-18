@@ -54,7 +54,7 @@ test('actual composer contribution targets each exact chat, includes background 
     if (name === 'react-native') return { View: 'View', Text: 'Text', Pressable: 'Pressable' };
     if (name === '@getpaseo/plugin/client/ui') return { SettingsSection: 'Section', SettingsCard: 'Card', SettingsSelect: 'Select' };
     if (name === '@getpaseo/plugin/client/react-native') return { ScrollView: 'ScrollView' };
-    if (name === '@getpaseo/plugin/client') return { useRpc: contract => async input => { requests.push({ name: contract.name, input }); return contract.name === 'subagent_routing_status' ? { available: false, snapshot: null } : contract.name === 'account_controls_status' ? statusResult : { ok: true, requestId: input.request.requestId, snapshot }; } };
+    if (name === '@getpaseo/plugin/client') return { useRpc: contract => async input => { requests.push({ name: contract.name, input }); return contract.name === 'account_controls_status' ? statusResult : { ok: true, requestId: input.request.requestId, snapshot }; } };
     if (name === '@tanstack/react-query') return { useQuery: value => { if (value.enabled !== false) void value.queryFn(); const data = value.queryKey[0] === 'pi-account-controls' ? statusResult : { available: false, snapshot: null }; return { data, isPending: !data.available, isFetching: false, isError: false, refetch: async () => ({ data: await value.queryFn(), isError: false }) }; } };
     return require(name);
   };
@@ -73,6 +73,7 @@ test('actual composer contribution targets each exact chat, includes background 
     const props = { context: 'agent', agentId: 'child', workspaceId: 'workspace', host: { id: 'host' }, theme: { colors: {} } };
     hook = 0; Content(props); await flush();
     assert.deepEqual(requests.filter(r => r.name === 'account_controls_status'), [{ name: 'account_controls_status', input: { agentId: 'child', workspaceId: 'workspace', providerId: 'openai-codex' } }]);
+    assert.equal(requests.some(r => r.name.startsWith('subagent_routing_')), false, 'chat account controls do not query or render provider choices');
     const initialRequests = requests.length;
     Content({ ...props, agentId: 'parent' }); Content({ ...props, workspaceId: 'other' }); Content({ ...props, context: 'workspace' });
     assert.equal(requests.length, initialRequests, 'substituted popover contexts cannot even query another chat');

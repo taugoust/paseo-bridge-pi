@@ -47,10 +47,16 @@ test("subagent-routing callback delegates snapshot/set and rejects missing or st
   globalThis.__paeSubagentRoutingV1 = service;
   const latestCtx = {
     sessionManager: { getSessionId: () => "session" },
-    modelRegistry: { getAll: () => [
-      { provider: "zeta", api: "physical" }, { provider: "alpha", api: "physical" },
-      { provider: "zeta", api: "physical" }, { provider: "virtual", api: "pi-virtual" },
-    ] },
+    modelRegistry: {
+      getAll: () => [
+        { provider: "zeta", api: "physical" }, { provider: "alpha", api: "physical" },
+        { provider: "unavailable", api: "physical" }, { provider: "virtual", api: "pi-virtual" },
+      ],
+      getAvailable: () => [
+        { provider: "zeta", api: "physical" }, { provider: "alpha", api: "physical" },
+        { provider: "zeta", api: "physical" }, { provider: "virtual", api: "pi-virtual" },
+      ],
+    },
   };
   const svcFn = makeSvcFn(latestCtx);
   const transport = { connected: true, sessionFile: "file", pipePath: "/tmp/bridge", operatorEpoch: "runtime" };

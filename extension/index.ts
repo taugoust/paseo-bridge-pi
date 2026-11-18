@@ -1341,7 +1341,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         else if (request?.operation === "providers" && request.sessionId === identity.sessionId) {
           const ctx = latestCtx;
           if (!ctx) throw new Error("Subagent-routing session unavailable");
-          result = [...new Set(ctx.modelRegistry.getAll().filter((model: any) => model.api !== "pi-virtual").map((model: any) => model.provider))].sort();
+          result = [...new Set(ctx.modelRegistry.getAvailable().filter((model: any) => model.api !== "pi-virtual").map((model: any) => model.provider))].sort();
         } else if (request?.operation === "set" && request.request?.expectedSessionId === identity.sessionId
           && request.request?.expectedServiceEpoch === identity.serviceEpoch)
           result = await service.set(request.request);
