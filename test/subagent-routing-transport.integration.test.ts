@@ -4,34 +4,83 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BridgeTransport } from "../extension/bridge-transport.ts";
-import { subagentRoutingSocketPath } from "../extension/subagent-routing-operator.js";
-import { callSubagentRouting, type SubagentRoutingDescriptor } from "../plugin/server/subagent-routing-transport.ts";
+import {
+  subagentRoutingSocketPath,
+  writeSubagentRoutingDescriptor,
+} from "../extension/subagent-routing-operator.js";
+import {
+  readAccountControlsDescriptor,
+  validateAccountControlsDescriptor,
+} from "../plugin/server/account-controls-transport.ts";
+import { callBtw } from "../plugin/server/btw-transport.ts";
 
-test("subagent-routing relay carries validated read and set requests on an independent socket", async () => {
-  const root = await mkdtemp(join(tmpdir(), "subagent-routing-socket-")), pipe = join(root, "bridge.sock"), transport = new BridgeTransport("session-file", pipe);
-  const identity = { agentId: "agent", sessionId: "session", runtimeEpoch: transport.operatorEpoch, serviceEpoch: "service", capability: transport.subagentRoutingCapability };
-  const calls: unknown[] = [];
-  transport.bind({ command: async () => {}, attached() {}, detached() {}, error() {},
+async function waitForSocket(path: string) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      if (((await stat(path)).mode & 0o777) === 0o600) return;
+    } catch {
+      // The endpoint is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`socket ${path} never appeared`);
+}
+
+test("the relay carries subagent routing requests on its own socket", async () => {
+  const root = await mkdtemp(join(tmpdir(), "subagent-routing-"));
+  const pipe = join(root, "bridge.sock");
+  const transport = new BridgeTransport("session-file", pipe);
+  const identity = {
+    agentId: "agent",
+    sessionId: "session",
+    runtimeEpoch: transport.operatorEpoch,
+    serviceEpoch: "service",
+    capability: transport.subagentRoutingCapability,
+  };
+  const received: any[] = [];
+  transport.bind({
+    command: async () => {},
+    attached() {},
+    detached() {},
+    error() {},
     subagentRoutingIdentity: () => identity,
-    subagentRouting: async request => { calls.push(request); return request; },
+    subagentRouting: async (request) => {
+      received.push(request);
+      return { ok: true };
+    },
   });
   transport.start();
-  const descriptor: SubagentRoutingDescriptor = { version: 1, socketPath: subagentRoutingSocketPath(pipe), ...identity };
-  async function invoke(request: Record<string, unknown>, capability = identity.capability) {
-    return callSubagentRouting({ ...descriptor, capability }, request, 2_000);
-  }
+
+  const descriptor = {
+    version: 1 as const,
+    socketPath: subagentRoutingSocketPath(pipe),
+    ...identity,
+  };
+  type Request = Record<string, unknown>;
+  const call = (request: Request, capability = identity.capability) =>
+    callBtw({ ...descriptor, capability }, request, 2_000, "subagent_routing");
+  const scoped = { sessionId: "session", serviceEpoch: "service" };
+
   try {
-    for (let attempt = 0; attempt < 50; attempt++) {
-      try { if (((await stat(descriptor.socketPath)).mode & 0o777) === 0o600) break; } catch { /* endpoint is still starting */ }
-      await new Promise(resolve => setTimeout(resolve, 10));
+    await waitForSocket(descriptor.socketPath);
+
+    // The descriptor lands where Paseo's existing reader finds it.
+    writeSubagentRoutingDescriptor(root, descriptor);
+    const read = await readAccountControlsDescriptor("agent", join(root, "subagents"));
+    assert.ok(validateAccountControlsDescriptor(read, "agent"));
+
+    for (const operation of ["snapshot", "providers", "set"]) {
+      assert.deepEqual(await call({ operation, ...scoped }), { ok: true });
     }
-    const snapshot = await invoke({ operation: "snapshot", sessionId: identity.sessionId });
-    assert.deepEqual(snapshot, { operation: "snapshot", sessionId: "session" });
-    const setRequest = { operation: "set", request: { expectedSessionId: "session", expectedServiceEpoch: "service", expectedRevision: 0, selection: { providerId: "vendor", accountId: null } } };
-    assert.deepEqual(await invoke(setRequest), setRequest);
-    assert.deepEqual(await invoke({ operation: "providers", sessionId: "session" }), { operation: "providers", sessionId: "session" });
-    await assert.rejects(invoke({ operation: "set", request: { ...setRequest.request, expectedRevision: -1 } }));
-    await assert.rejects(invoke({ operation: "snapshot", sessionId: "session" }, "b".repeat(64)));
-    assert.equal(calls.length, 3, "invalid frames never reach the service callback");
-  } finally { transport.close(); await rm(root, { recursive: true, force: true }); }
+    assert.deepEqual(received.map((request) => request.operation), ["snapshot", "providers", "set"]);
+
+    // Unknown operations, wrong sessions and wrong capabilities never reach Pi.
+    await assert.rejects(call({ operation: "start", ...scoped }));
+    await assert.rejects(call({ operation: "snapshot", ...scoped, sessionId: "other" }));
+    await assert.rejects(call({ operation: "snapshot", ...scoped }, "b".repeat(64)));
+    assert.equal(received.length, 3);
+  } finally {
+    transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

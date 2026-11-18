@@ -12,9 +12,14 @@ The pill is registered against each non-archived Pi agent's `agentId` and worksp
 
 ## Subagent provider choice
 
-Pi sessions expose a separate **Subagents** provider and account choice in the companion `paseo-accounts` panel. The explicit chat account contribution supports it too. It defaults to following the session and shows any saved override. Only new subagents use a changed choice. Named accounts are available for `openai-codex` only. Clearing the choice restores session-following without changing the main session account.
+The bridge relays Pi's subagent provider setting to Paseo. The choice itself is
+shown in the `paseo-accounts` pill.
 
-This requires the protocol 1 `__paeSubagentRoutingV1` service from [pi-agent-extensions#70](https://github.com/taugoust/pi-agent-extensions/pull/70). Older extensions hide the control. The bridge discovers physical providers from Pi and relays bounded requests through a separate private operator socket and `.subagents.json` descriptor. Writes bind session, runtime, service epoch and revision. Rejected writes refresh state for review rather than blindly retrying.
+It needs the protocol 1 `__paeSubagentRoutingV1` service from
+pi-agent-extensions. With older extensions nothing is published and the choice
+stays hidden. Requests use the same private socket and descriptor setup as
+workflows, under `~/.pi/paseo-bridge/subagents`, with the `subagent_routing`
+wire type. The only operations are `snapshot`, `providers` and `set`.
 
 ## Access mode and composer layout
 

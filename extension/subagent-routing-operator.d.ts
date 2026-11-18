@@ -1,6 +1,11 @@
-export function subagentRoutingSocketPath(bridgeSocket: string): string;
-export function subagentRoutingDescriptorPath(baseDir: string, agentId: string): string;
-export function writeSubagentRoutingDescriptor(baseDir: string, descriptor: any): string;
-export function removeSubagentRoutingDescriptor(baseDir: string, agentId: string, runtimeEpoch: string): void;
-export function validateSubagentRoutingEnvelope(value: unknown, identity: any): boolean;
-export function subagentRoutingCapability(): string;
+import type { BtwIdentity } from "./btw-operator.js";
+export function subagentRoutingSocketPath(pipe: string): string;
+export function writeSubagentRoutingDescriptor(
+	base: string,
+	descriptor: BtwIdentity & { version: 1; socketPath: string },
+): string;
+export function removeSubagentRoutingDescriptor(
+	base: string,
+	agentId: string,
+	epoch: string,
+): void;
