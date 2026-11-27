@@ -125,6 +125,13 @@ export function createBtwEndpoint(pipePath, callbacks, wireType = "btw", suffix 
 		},
 	};
 }
+// The operations each wire type accepts.
+const BTW_OPERATIONS = ["snapshot", "start", "send", "cancel", "remove"];
+const OPERATIONS = {
+	btw: BTW_OPERATIONS,
+	workflows: [...BTW_OPERATIONS, "review"],
+	subagent_routing: ["snapshot", "providers", "set"],
+};
 export function validateBtwEnvelope(value, identity, wireType = "btw") {
 	if (
 		!value ||
@@ -153,8 +160,6 @@ export function validateBtwEnvelope(value, identity, wireType = "btw") {
 		value.serviceEpoch === identity.serviceEpoch &&
 		value.request?.sessionId === identity.sessionId &&
 		value.request?.serviceEpoch === identity.serviceEpoch &&
-		["snapshot", "start", "send", "cancel", "remove", ...(wireType === "workflows" ? ["review"] : [])].includes(
-			value.request?.operation,
-		)
+		(OPERATIONS[wireType] ?? []).includes(value.request?.operation)
 	);
 }

@@ -333,7 +333,7 @@ export function DelegatedGoals({ registry, assignedGoal = null, completedAssigne
       {actions}
     </View>
     {moreOpen && goal.assigned && !terminal(goal) && !locked ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 }}>
-      {/* Pi asks for confirmation before either change. Editing needs Pi to be idle. */}
+      {/* Pi asks for confirmation before each change. Edits made while Pi is busy apply after the current turn. */}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {button("Edit", () => { setSelected(goal.id); setEditing(true); })}
         {button("Mark complete", () => { setSelected(goal.id); setCompleteOpen(true); })}

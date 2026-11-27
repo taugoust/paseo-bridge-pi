@@ -13,6 +13,10 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
+        subagent-routing = import ./nix/subagent-routing-check.nix {
+          inherit pkgs;
+          src = self;
+        };
         pure-helpers = import ./nix/checks.nix {
           inherit pkgs;
           src = self;

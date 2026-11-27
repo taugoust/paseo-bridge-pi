@@ -10,6 +10,17 @@ This plugin targets the `pi-integration` branch of `taugoust/paseo`. Its compile
 
 The pill is registered against each non-archived Pi agent's `agentId` and workspace. The daemon and Pi must run as the same Unix user; Windows daemon hosts are not supported. Changes apply to the selected agent and its children; underlying authorization and sandbox policy remain mandatory. Its label reports `On`, `Off`, `unavailable`, or a checking state. The popover reads current state, disables controls when state is stale/unavailable or an operation is busy, and sends explicit `enabled: true` or `enabled: false` requests. Status failures never imply a mode. No model prompt, chat message, abort, or slash command is used.
 
+## Subagent provider choice
+
+The bridge relays Pi's subagent provider setting to Paseo. The choice itself is
+shown in the `paseo-accounts` pill.
+
+It needs the protocol 1 `__paeSubagentRoutingV1` service from
+pi-agent-extensions. With older extensions nothing is published and the choice
+stays hidden. Requests use the same private socket and descriptor setup as
+workflows, under `~/.pi/paseo-bridge/subagents`, with the `subagent_routing`
+wire type. The only operations are `snapshot`, `providers` and `set`.
+
 ## Access mode and composer layout
 
 On the patched Paseo server, Pi's existing native mode selector beside thinking displays **Dangerous ask** (approval prompts on) or **Full access** (approval prompts off). Reads reflect the authoritative permission-gate service; only an explicit selection changes it. Existing sandbox/authorization policy stays active. Session/runtime-bound writes are read back, and unsupported runtimes expose no native modes. A renamed plugin control remains as a fallback until the active Pi bridge is reloaded; it disappears once both native modes are advertised.

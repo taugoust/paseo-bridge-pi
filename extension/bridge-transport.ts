@@ -17,6 +17,8 @@ import { createBtwEndpoint, type BtwIdentity } from "./btw-operator.js";
 type Callbacks = {
   workflowsIdentity?(): BtwIdentity | undefined;
   workflows?(request: unknown): Promise<unknown>;
+  subagentRoutingIdentity?(): BtwIdentity | undefined;
+  subagentRouting?(request: unknown): Promise<unknown>;
   btwIdentity?(): BtwIdentity | undefined;
   btw?(request: unknown): Promise<unknown>;
   command(value: any): Promise<void>;
@@ -45,6 +47,11 @@ export class BridgeTransport {
   private foregroundTasksServer: net.Server | null = null;
   private foregroundTasksSockets = new Set<net.Socket>();
   private workflowsEndpoint?: ReturnType<typeof createBtwEndpoint>;
+  private subagentRoutingEndpoint?: ReturnType<typeof createBtwEndpoint>;
+  private _subagentRoutingCapability?: string;
+  get subagentRoutingCapability(): string {
+    return this._subagentRoutingCapability ??= randomBytes(32).toString("hex");
+  }
   private _workflowsCapability?: string;
   get workflowsCapability(): string { return this._workflowsCapability ??= randomBytes(32).toString("hex"); }
   private btwEndpoint?: ReturnType<typeof createBtwEndpoint>;
@@ -69,7 +76,15 @@ export class BridgeTransport {
   get foregroundTasksCapability(): string { return this._foregroundTasksCapability ??= foregroundTasksCapability(); }
   private _accountControlsCapability?: string;
   get accountControlsCapability(): string { return this._accountControlsCapability ??= accountControlsCapability(); }
-  rotateOperatorEpoch(): void { this._workflowsCapability = randomBytes(32).toString("hex"); this._btwCapability = randomBytes(32).toString("hex"); this._operatorEpoch = randomUUID(); this._harnessReadOnlyCapability = randomBytes(32).toString("hex"); this._foregroundTasksCapability = foregroundTasksCapability(); this._accountControlsCapability = accountControlsCapability(); }
+  rotateOperatorEpoch(): void {
+    this._operatorEpoch = randomUUID();
+    this._workflowsCapability = randomBytes(32).toString("hex");
+    this._btwCapability = randomBytes(32).toString("hex");
+    this._harnessReadOnlyCapability = randomBytes(32).toString("hex");
+    this._foregroundTasksCapability = foregroundTasksCapability();
+    this._accountControlsCapability = accountControlsCapability();
+    this._subagentRoutingCapability = randomBytes(32).toString("hex");
+  }
 
   constructor(sessionFile: string, pipePath: string) {
     this.sessionFile = sessionFile;
@@ -293,11 +308,28 @@ export class BridgeTransport {
     this.foregroundTasksServer.listen(socketPath, () => { if (process.platform !== "win32") { try { fs.chmodSync(socketPath, 0o600); } catch {} } });
   }
 
+  /** Relays Paseo's subagent provider requests to Pi on the generic btw endpoint. */
+  private ensureSubagentRoutingEndpoint(): void {
+    if (this.closed || this.subagentRoutingEndpoint) return;
+    const callbacks = () => ({
+      btwIdentity: () => this.callbacks?.subagentRoutingIdentity?.(),
+      btw: async (request: unknown) => {
+        const run = this.callbacks?.subagentRouting;
+        if (!run) throw new Error("Subagent routing unavailable");
+        return run(request);
+      },
+      error: (error: Error) => this.callbacks?.error(error),
+    });
+    this.subagentRoutingEndpoint =
+      createBtwEndpoint(this.pipePath, callbacks, "subagent_routing", ".subagent-routing");
+  }
+
   private ensureAccountControlsEndpoint(): void {
     if (!this.closed && !this.btwEndpoint) this.btwEndpoint = createBtwEndpoint(this.pipePath, () => this.callbacks);
     if (!this.closed && !this.workflowsEndpoint) this.workflowsEndpoint = createBtwEndpoint(this.pipePath, () => ({
       btwIdentity: () => this.callbacks?.workflowsIdentity?.(), btw: async request => { if (!this.callbacks?.workflows) throw new Error("Workflows unavailable"); return this.callbacks.workflows(request); }, error: error => this.callbacks?.error(error),
     }), "workflows", ".workflows");
+    this.ensureSubagentRoutingEndpoint();
     this.accountControlsSockets ??= new Set<net.Socket>();
     if (this.accountControlsServer || this.closed) return;
     const socketPath = accountControlsSocketPath(this.pipePath);
@@ -379,6 +411,8 @@ export class BridgeTransport {
     this.foregroundTasksServer = null;
     this.workflowsEndpoint?.close();
     this.workflowsEndpoint = undefined;
+    this.subagentRoutingEndpoint?.close();
+    this.subagentRoutingEndpoint = undefined;
     this.btwEndpoint?.close();
     this.btwEndpoint = undefined;
     this.accountControlsServer?.close();

@@ -38,6 +38,12 @@ import { foregroundTasksSocketPath, removeForegroundTasksDescriptor, writeForegr
 import { accountControlsSocketPath, removeAccountControlsDescriptor, writeAccountControlsDescriptor } from "./account-controls-operator.js";
 import { btwSocketPath, removeBtwDescriptor, writeBtwDescriptor } from "./btw-operator.js";
 import { workflowsSocketPath, removeWorkflowsDescriptor, writeWorkflowsDescriptor } from "./workflows-operator.js";
+import {
+  removeSubagentRoutingDescriptor,
+  subagentRoutingSocketPath,
+  writeSubagentRoutingDescriptor,
+} from "./subagent-routing-operator.js";
+import { runSubagentRouting, subagentRoutingService } from "./subagent-routing.ts";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
 import {
@@ -1215,6 +1221,37 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     if (!descriptor) { revokeWorkflowsDescriptor(); return; }
     try { writeWorkflowsDescriptor(path.join(os.homedir(), ".pi", "paseo-bridge"), descriptor); } catch { revokeWorkflowsDescriptor(); }
   }
+  function activeSubagentRoutingDescriptor() {
+    const t = transport, ctx = latestCtx, agentId = currentAgentId;
+    if (!t?.connected || !ctx || !agentId || currentSessionFile !== t.sessionFile) return undefined;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const service = subagentRoutingService(sessionId);
+    if (!service) return undefined;
+    return {
+      version: 1 as const,
+      socketPath: subagentRoutingSocketPath(t.pipePath),
+      capability: t.subagentRoutingCapability,
+      agentId,
+      sessionId,
+      runtimeEpoch: t.operatorEpoch,
+      serviceEpoch: service.serviceEpoch,
+    };
+  }
+  function revokeSubagentRoutingDescriptor() {
+    if (!transport || !currentAgentId) return;
+    const base = path.join(os.homedir(), ".pi", "paseo-bridge");
+    removeSubagentRoutingDescriptor(base, currentAgentId, transport.operatorEpoch);
+  }
+  function publishSubagentRoutingDescriptor() {
+    const descriptor = activeSubagentRoutingDescriptor();
+    if (!descriptor) return revokeSubagentRoutingDescriptor();
+    try {
+      const base = path.join(os.homedir(), ".pi", "paseo-bridge");
+      writeSubagentRoutingDescriptor(base, descriptor);
+    } catch {
+      revokeSubagentRoutingDescriptor();
+    }
+  }
   function activeBtwService() {
     const service = (globalThis as any).__paeBtwV1;
     return service?.protocol === 1 && service.sessionId === latestCtx?.sessionManager.getSessionId()
@@ -1250,6 +1287,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
   function publishAccountControlsDescriptor() {
     publishWorkflowsDescriptor();
+    publishSubagentRoutingDescriptor();
     publishBtwDescriptor();
     const descriptor = activeAccountControlsDescriptor();
     if (!descriptor) { revokeAccountControlsDescriptor(); return; }
@@ -1388,6 +1426,23 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
           || currentSessionFile !== t.sessionFile || latestCtx?.sessionManager.getSessionId() !== identity.sessionId) throw new Error("Workflow session changed");
         return result;
       },
+      subagentRoutingIdentity() { return activeSubagentRoutingDescriptor(); },
+      async subagentRouting(request: any) {
+        const identity = activeSubagentRoutingDescriptor();
+        const service = subagentRoutingService(identity?.sessionId);
+        const t = transport, ctx = latestCtx;
+        if (!identity || !service || !t || !ctx) throw new Error("Subagent routing unavailable");
+        const result = await runSubagentRouting(service, ctx, request);
+        // The session or bridge may have changed while Pi handled the request.
+        const current = activeSubagentRoutingDescriptor();
+        const unchanged = transport === t
+          && current?.sessionId === identity.sessionId
+          && current.runtimeEpoch === identity.runtimeEpoch
+          && current.serviceEpoch === identity.serviceEpoch
+          && current.agentId === identity.agentId;
+        if (!unchanged) throw new Error("Subagent routing session changed");
+        return result;
+      },
       btwIdentity() { return activeBtwDescriptor(); },
       async btw(request: any) {
         const service = activeBtwService(), identity = activeBtwDescriptor(), t = transport, ctx = latestCtx;
@@ -1500,6 +1555,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
         revokeAccountControlsDescriptor();
         revokeBtwDescriptor();
         revokeWorkflowsDescriptor();
+        revokeSubagentRoutingDescriptor();
         for (const reject of [...pendingCommandReplies.values()]) reject("Paseo controller disconnected before the command completed; its outcome is unknown.");
         transport?.rotateOperatorEpoch();
         cancelPendingRemoteUiRequests();
@@ -1519,6 +1575,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     revokeAccountControlsDescriptor();
     revokeBtwDescriptor();
     revokeWorkflowsDescriptor();
+    revokeSubagentRoutingDescriptor();
     providerReconnect.stop();
     cancelPendingRemoteUiRequests();
     preflightAbortController.abort();
@@ -1928,6 +1985,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
       revokeAccountControlsDescriptor();
       revokeBtwDescriptor();
       revokeWorkflowsDescriptor();
+      revokeSubagentRoutingDescriptor();
       providerReconnect.stop();
       cancelPendingRemoteUiRequests();
       preflightAbortController.abort();
