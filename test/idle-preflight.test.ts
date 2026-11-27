@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dispatchAfterIdlePreflight, IDLE_PREFLIGHT_KEY } from "../extension/idle-preflight.ts";
+import {
+  dispatchAfterIdlePreflight,
+  IDLE_PREFLIGHT_KEY,
+  safePromptError,
+} from "../extension/idle-preflight.ts";
 
 const active = new AbortController().signal;
 
@@ -74,6 +78,26 @@ test("registered extension Cancel stops dispatch; Ignore dispatches once", async
   );
   assert.deepEqual(ignored, { outcome: "continue", dispatched: true, value: 1 });
   assert.equal(sends, 1);
+});
+
+test("genuine compaction failures preserve safe diagnostics and remain errors", async () => {
+  const failure = new Error("compaction aborted");
+  const capability = { ready: true, check: async () => { throw failure; } };
+  const result = await dispatchAfterIdlePreflight(capability, active,
+    async () => assert.fail("must not dispatch"));
+  assert.equal(result.outcome, "error");
+  assert.equal(result.error, failure);
+  assert.equal(safePromptError(failure), "compaction interrupted");
+  assert.doesNotMatch(safePromptError(failure), /\babort(ed)?\b/i);
+});
+
+test("external signal abort remains an intentional cancellation", async () => {
+  const controller = new AbortController();
+  const check = () => new Promise<"continue">(() => {});
+  const pending = dispatchAfterIdlePreflight({ ready: true, check }, controller.signal,
+    async () => assert.fail("must not dispatch"));
+  controller.abort();
+  assert.deepEqual(await pending, { outcome: "cancel", dispatched: false });
 });
 
 test("aborted and failed preflight never silently dispatch a paid prompt", async () => {

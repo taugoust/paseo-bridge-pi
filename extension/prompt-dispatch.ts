@@ -6,6 +6,13 @@ type CommandResult =
   | { status: "completed"; notifications: unknown[] }
   | { status: "failed"; error: { message: string }; notifications: unknown[] }
   | { status: "not_found"; notifications: unknown[] };
+export class PromptAdmissionError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "PromptAdmissionError";
+  }
+}
+
 type PromptApi = {
   getCommands(): Array<{ name: string; source: string }>;
   sendUserMessage(content: PromptContent, options?: PromptOptions): void | Promise<void>;
@@ -74,13 +81,31 @@ export async function dispatchPaseoPrompt(
     ...(streaming ? { deliverAs: "followUp" as const } : {}), expandPromptTemplates: true,
   };
   if (typeof pi.submitUserMessage === "function") {
-    const receipt = await pi.submitUserMessage(content, options);
-    if (!["handled", "queued", "started"].includes(receipt.disposition)) throw new Error("Unknown Pi prompt admission disposition");
+    let submission: Promise<{ disposition: "handled" | "queued" | "started" }>;
+    try {
+      submission = pi.submitUserMessage(content, options);
+    } catch (error) {
+      throw new PromptAdmissionError("Pi rejected the prompt before admission", error);
+    }
+    let receipt: { disposition: "handled" | "queued" | "started" };
+    try {
+      receipt = await submission;
+    } catch (error) {
+      throw new PromptAdmissionError("Pi rejected the prompt before admission", error);
+    }
+    if (!receipt || !["handled", "queued", "started"].includes(receipt.disposition)) {
+      throw new PromptAdmissionError("Pi returned an invalid prompt admission receipt");
+    }
     return { agentInvoked: receipt.disposition !== "handled" };
   }
   // Older peers offer only fire-and-forget submission. Keep that compatibility
   // path, but omit the unknown agent-invocation claim rather than inventing it.
-  const submission = pi.sendUserMessage(content, options);
+  let submission: void | Promise<void>;
+  try {
+    submission = pi.sendUserMessage(content, options);
+  } catch (error) {
+    throw new PromptAdmissionError("Pi rejected the prompt before submission", error);
+  }
   if (submission && typeof submission.catch === "function") void submission.catch(onAsyncError);
   return {};
 }

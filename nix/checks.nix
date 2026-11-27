@@ -61,7 +61,8 @@ pkgs.runCommand "paseo-bridge-pi-pure-helpers" { nativeBuildInputs = [ nodejs ];
     test/canonical-name-sync.test.ts test/paseo-ws.test.ts \
     test/idle-preflight.test.ts test/packaging-check.test.mjs \
     test/compaction-command.test.ts test/remote-user-content.test.ts \
-    test/session-projection.test.ts test/prompt-dispatch.test.ts \
+    test/session-projection.test.ts test/prompt-admission.test.ts \
+    test/prompt-dispatch.test.ts \
     test/session-model-request.test.ts test/import-placement.test.ts \
     test/subagent-task-projection.test.ts test/subagent-native-projection.test.ts \
     test/native-subagent-links.test.ts plugin/test/jobs-pages.test.ts plugin/test/agent-directory.test.ts \

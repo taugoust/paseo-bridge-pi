@@ -40,9 +40,24 @@ import { btwSocketPath, removeBtwDescriptor, writeBtwDescriptor } from "./btw-op
 import { workflowsSocketPath, removeWorkflowsDescriptor, writeWorkflowsDescriptor } from "./workflows-operator.js";
 import { isRuntimeReloadCommand, requireIdleReload, validateReloadPrompt } from "./reload-command.js";
 import { abortAndWaitForIdle } from "./abort-dispatch.js";
-import { dispatchPaseoPrompt, isExtensionCommand } from "./prompt-dispatch.js";
+import {
+  dispatchPaseoPrompt,
+  isExtensionCommand,
+  PromptAdmissionError,
+} from "./prompt-dispatch.js";
 import { remoteUserContent } from "./remote-user-content.js";
-import { dispatchAfterIdlePreflight, IDLE_PREFLIGHT_KEY, IDLE_PROMPT_CANCELLED } from "./idle-preflight.js";
+import {
+  promptRecoveryMessage,
+  reportRejectedPrompt,
+  retainPromptIfCurrent,
+} from "./prompt-admission.js";
+import {
+  dispatchAfterIdlePreflight,
+  IDLE_PREFLIGHT_KEY,
+  IDLE_PROMPT_CANCELLED,
+  safePromptError,
+  type IdlePreflightPayload,
+} from "./idle-preflight.js";
 import { coordinateMirroredSelect } from "./mirrored-select.js";
 import { createProviderReconnectLoop } from "./provider-reconnect.js";
 import { unknownRpcCommandError } from "./rpc-compat.js";
@@ -283,6 +298,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   const pendingCommandReplies = new Map<symbol, (reason: string) => void>();
   let lifecycleClosed = false;
   let preflightAbortController = new AbortController();
+  let sessionEpoch = 0;
   // Stop cancels pending prompt admission without closing the bridge lifetime.
   let promptAbortController = new AbortController();
   let placementTimer: ReturnType<typeof setInterval> | undefined;
@@ -686,24 +702,75 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     };
   }
 
-  async function preflightUserPrompt(id: string, commandType: string, send: (frame: unknown) => void): Promise<() => boolean> {
+  type PromptAdmissionLease = {
+    capability: unknown;
+    sessionId: string | null | undefined;
+    sessionEpoch: number;
+    signal: AbortSignal;
+    canDispatch(): boolean;
+  };
+
+  function promptLeaseIsCurrent(lease: PromptAdmissionLease): boolean {
+    if (lease.signal.aborted || lease.sessionEpoch !== sessionEpoch) return false;
+    try {
+      const currentSessionId = latestCtx?.sessionManager.getSessionId();
+      const currentCapability = (globalThis as Record<string, unknown>)[IDLE_PREFLIGHT_KEY];
+      return currentSessionId === lease.sessionId && currentCapability === lease.capability;
+    } catch {
+      return false;
+    }
+  }
+
+  async function preflightUserPrompt(
+    id: string,
+    commandType: string,
+    send: (frame: unknown) => void,
+    payload: IdlePreflightPayload,
+  ): Promise<PromptAdmissionLease> {
+    const sessionId = latestCtx?.sessionManager.getSessionId();
     const capability = (globalThis as Record<string, unknown>)[IDLE_PREFLIGHT_KEY];
+    const leaseEpoch = sessionEpoch;
     const signal = AbortSignal.any([preflightAbortController.signal, promptAbortController.signal]);
+    let dispatchAllowed = false;
+    const lease: PromptAdmissionLease = {
+      capability,
+      sessionId,
+      sessionEpoch: leaseEpoch,
+      signal,
+      canDispatch: () => {
+        if (!dispatchAllowed) return false;
+        if (promptLeaseIsCurrent(lease)) return true;
+        send(failure(id, commandType, IDLE_PROMPT_CANCELLED));
+        return false;
+      },
+    };
     const gated = await dispatchAfterIdlePreflight(capability, signal, async () => true);
     if (!gated.dispatched) {
-      const error = gated.outcome === "cancel" ? IDLE_PROMPT_CANCELLED :
-        "Prompt not sent: pre-send confirmation could not complete.";
-      send(failure(id, commandType, error));
-      return () => false;
-    }
-    // Recheck in the caller's dispatch stack: Stop may arrive after preflight
-    // resolved but before the caller resumes. No await may separate this guard
-    // from sendUserMessage, or a cancelled admission could start a new turn.
-    return () => {
-      if (!signal.aborted) return true;
+      if (gated.outcome === "error" && promptLeaseIsCurrent(lease)) {
+        const reason = safePromptError(gated.error);
+        const retention = await retainPromptIfCurrent({
+          capability: lease.capability,
+          payload,
+          reason,
+          signal: lease.signal,
+          isCurrent: () => promptLeaseIsCurrent(lease),
+        });
+        if (retention === "stale") {
+          send(failure(id, commandType, IDLE_PROMPT_CANCELLED));
+          return lease;
+        }
+        const recovery = promptRecoveryMessage(payload, retention === "saved");
+        send(failure(id, commandType,
+          `Prompt not sent: idle preflight failed: ${reason}. ${recovery}`));
+        return lease;
+      }
       send(failure(id, commandType, IDLE_PROMPT_CANCELLED));
-      return false;
-    };
+      return lease;
+    }
+    // Recheck before dispatch: Stop or session replacement may have raced preflight.
+    dispatchAllowed = true;
+    lease.canDispatch();
+    return lease;
   }
 
   function commandNotices(reply: (frame: unknown) => void) {
@@ -752,14 +819,43 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
     if (await handleBridgeManagement(cmd, send)) return;
     const content = remoteUserContent(message, cmd.images);
     const streaming = latestCtx ? !latestCtx.isIdle() : false;
+    const promptPayload: IdlePreflightPayload = {
+      text: message,
+      ...(Array.isArray(cmd.images) ? { images: cmd.images } : {}),
+      ...(streaming ? { streamingBehavior: "followUp" } : {}),
+    };
+    let admissionLease: PromptAdmissionLease | undefined;
     if (!isExtensionCommand(pi, message)) {
-      const canDispatch = await preflightUserPrompt(cmd.id, "prompt", send);
-      if (!canDispatch()) return;
+      admissionLease = await preflightUserPrompt(cmd.id, "prompt", send, promptPayload);
+      if (!admissionLease.canDispatch()) return;
     }
-    const dispatch = () => dispatchPaseoPrompt(pi, content as any, message, streaming, (err) =>
-      debugLog(`prompt failed after acceptance: ${String(err)}`), commandNotices(send), undefined, promptAbortController.signal,
+    const signal = admissionLease?.signal ?? promptAbortController.signal;
+    const dispatch = () => dispatchPaseoPrompt(
+      pi,
+      content as any,
+      message,
+      streaming,
+      err => debugLog(`prompt failed after acceptance: ${String(err)}`),
+      commandNotices(send),
+      undefined,
+      signal,
     );
-    const result = await dispatch();
+    let result: { agentInvoked?: boolean };
+    try {
+      result = await dispatch();
+    } catch (error) {
+      if (admissionLease && error instanceof PromptAdmissionError &&
+        await reportRejectedPrompt({
+        reason: safePromptError(error.cause ?? error),
+        cancelledMessage: IDLE_PROMPT_CANCELLED,
+        capability: admissionLease.capability,
+        payload: promptPayload,
+        signal: admissionLease.signal,
+        isCurrent: () => promptLeaseIsCurrent(admissionLease!),
+        sendFailure: message => send(failure(cmd.id, "prompt", message)),
+      })) return;
+      throw error;
+    }
     send(success(cmd.id, "prompt", result));
   }
 
@@ -820,13 +916,41 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
             throw new Error("Reload must be sent as an ordinary prompt while Pi is idle.");
           }
           if (await handleBridgeManagement(cmd, send)) return;
+          const promptPayload: IdlePreflightPayload = {
+            text: cmd.message,
+            ...(Array.isArray(cmd.images) ? { images: cmd.images } : {}),
+            streamingBehavior: type === "steer" ? "steer" : "followUp",
+          };
+          let admissionLease: PromptAdmissionLease | undefined;
           if (!isExtensionCommand(pi, cmd.message)) {
-            const canDispatch = await preflightUserPrompt(id, type, send);
-            if (!canDispatch()) return;
+            admissionLease = await preflightUserPrompt(id, type, send, promptPayload);
+            if (!admissionLease.canDispatch()) return;
           }
-          const result = await dispatchPaseoPrompt(pi, remoteUserContent(cmd.message, cmd.images) as any,
-            cmd.message, false, err => debugLog(`queued prompt failed after acceptance: ${String(err)}`),
-            commandNotices(send), type === "steer" ? "steer" : "followUp", promptAbortController.signal);
+          let result: { agentInvoked?: boolean };
+          try {
+            result = await dispatchPaseoPrompt(
+              pi,
+              remoteUserContent(cmd.message, cmd.images) as any,
+              cmd.message,
+              false,
+              err => debugLog(`queued prompt failed after acceptance: ${String(err)}`),
+              commandNotices(send),
+              type === "steer" ? "steer" : "followUp",
+              admissionLease?.signal ?? promptAbortController.signal,
+            );
+          } catch (error) {
+            if (admissionLease && error instanceof PromptAdmissionError &&
+              await reportRejectedPrompt({
+              reason: safePromptError(error.cause ?? error),
+              cancelledMessage: IDLE_PROMPT_CANCELLED,
+              capability: admissionLease.capability,
+              payload: promptPayload,
+              signal: admissionLease.signal,
+              isCurrent: () => promptLeaseIsCurrent(admissionLease!),
+              sendFailure: message => send(failure(id, type, message)),
+            })) return;
+            throw error;
+          }
           send(success(id, type, result));
           return;
         }
@@ -1720,6 +1844,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (event, ctx) => {
+    sessionEpoch += 1;
     readOnlySessionLifecycle = {};
     preflightAbortController.abort();
     preflightAbortController = new AbortController();
@@ -1779,6 +1904,7 @@ export default function piPaseoBridge(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event) => {
+    sessionEpoch += 1;
     readOnlySessionLifecycle = {};
     // Reload retains the controller socket: settle old command RPCs before its
     // owner is suspended, rather than hanging them or replying into a new binding.

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dispatchPaseoPrompt, isExtensionCommand } from "../extension/prompt-dispatch.ts";
+import {
+  dispatchPaseoPrompt,
+  isExtensionCommand,
+  PromptAdmissionError,
+} from "../extension/prompt-dispatch.ts";
 
 const commands = () => [{ name: "slow-mode", source: "extension" }, { name: "review", source: "prompt" }];
 function deferred() {
@@ -85,10 +89,53 @@ for (const disposition of ["handled", "queued", "started"] as const) {
   });
 }
 
-test("pre-admission failures reject instead of falsely acknowledging model work", async () => {
-  const pi = { getCommands: commands, sendUserMessage() { assert.fail("must not fall back after a real rejection"); },
-    async submitUserMessage(): Promise<never> { throw new Error("authentication unavailable"); } };
-  await assert.rejects(dispatchPaseoPrompt(pi, "literal", "literal", false), /authentication unavailable/);
+test("sync failures and invalid receipts reject before admission", async () => {
+  const syncFailure = new Error("request was aborted before sending");
+  const syncPi = {
+    getCommands: commands,
+    sendUserMessage() {},
+    submitUserMessage() { throw syncFailure; },
+  };
+  await assert.rejects(dispatchPaseoPrompt(syncPi, "literal", "literal", false), error => {
+    assert.ok(error instanceof PromptAdmissionError);
+    assert.equal(error.cause, syncFailure);
+    return true;
+  });
+
+  const invalidPi = {
+    getCommands: commands,
+    sendUserMessage() {},
+    async submitUserMessage() { return {} as any; },
+  };
+  await assert.rejects(dispatchPaseoPrompt(invalidPi, "literal", "literal", false),
+    PromptAdmissionError);
+});
+
+test("legacy async failures after send remain non-retryable", async () => {
+  const failure = new Error("accepted model work failed");
+  let observed: unknown;
+  const pi = {
+    getCommands: commands,
+    sendUserMessage() { return Promise.reject(failure); },
+  };
+  assert.deepEqual(await dispatchPaseoPrompt(pi, "literal", "literal", false,
+    error => { observed = error; }), {});
+  await Promise.resolve();
+  assert.equal(observed, failure);
+});
+
+test("asynchronous pre-admission rejection remains a recoverable admission failure", async () => {
+  const failure = new Error("authentication unavailable");
+  const pi = {
+    getCommands: commands,
+    sendUserMessage() { assert.fail("must not fall back after a real rejection"); },
+    async submitUserMessage(): Promise<never> { throw failure; },
+  };
+  await assert.rejects(dispatchPaseoPrompt(pi, "literal", "literal", false), error => {
+    assert.ok(error instanceof PromptAdmissionError);
+    assert.equal(error.cause, failure);
+    return true;
+  });
 });
 
 test("ordinary queued messages preserve their delivery options", async () => {

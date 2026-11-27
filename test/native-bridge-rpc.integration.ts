@@ -14,6 +14,19 @@ import { setTimeout as delay } from "node:timers/promises";
 // Provider calls are forbidden except the single delayed-compaction delivery probe.
 const executable = process.env.BRIDGE_NATIVE_PI;
 const root = fileURLToPath(new URL("../", import.meta.url));
+
+async function waitForFile(file: string, deadline: number): Promise<void> {
+  for (;;) {
+    try {
+      await readFile(file);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      assert.ok(Date.now() < deadline, `Timed out waiting for ${file}`);
+      await delay(10);
+    }
+  }
+}
 const fixtureProvider = `import { appendFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 export default function(pi) {
@@ -25,23 +38,47 @@ export default function(pi) {
       commandOutcomes: typeof pi.dispatchExtensionCommand === "function",
       promptAdmission: typeof pi.submitUserMessage === "function",
     }));
-    if (process.env.OFFLINE_REAL_IDLE_EXTENSION !== "1") globalThis.__piIdleContextPreflightV1 = { ready: true, check: async signal => {
-      if (!existsSync(process.env.OFFLINE_IDLE_COMPACT_REQUEST)) return "continue";
-      unlinkSync(process.env.OFFLINE_IDLE_COMPACT_REQUEST);
-      const sessionId = ctx.sessionManager.getSessionId(), leafId = ctx.sessionManager.getLeafId();
-      appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_PREFLIGHT_START\\n");
-      while (!existsSync(process.env.OFFLINE_IDLE_COMPACT_RELEASE)) {
-        if (signal?.aborted) return "cancel";
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      unlinkSync(process.env.OFFLINE_IDLE_COMPACT_RELEASE);
-      appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_PREFLIGHT_COMPACT_CHOSEN\\n");
-      await new Promise((resolve, reject) => ctx.compact({ onComplete: resolve, onError: reject }));
-      const entry = ctx.sessionManager.getBranch().findLast(item => item.type === "compaction");
-      if (ctx.sessionManager.getSessionId() !== sessionId || entry?.parentId !== leafId || ctx.sessionManager.getLeafId() !== entry.id) return "cancel";
-      appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_PREFLIGHT_COMPACTED\\n");
-      return "continue";
-    } };
+    if (process.env.OFFLINE_REAL_IDLE_EXTENSION !== "1") globalThis.__piIdleContextPreflightV1 = {
+      ready: true,
+      check: async signal => {
+        if (existsSync(process.env.OFFLINE_INPUT_RECEIPT + ".fail")) {
+          unlinkSync(process.env.OFFLINE_INPUT_RECEIPT + ".fail");
+          throw new Error("compaction aborted");
+        }
+        if (!existsSync(process.env.OFFLINE_IDLE_COMPACT_REQUEST)) return "continue";
+        unlinkSync(process.env.OFFLINE_IDLE_COMPACT_REQUEST);
+        const sessionId = ctx.sessionManager.getSessionId();
+        const leafId = ctx.sessionManager.getLeafId();
+        appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_PREFLIGHT_START\\n");
+        while (!existsSync(process.env.OFFLINE_IDLE_COMPACT_RELEASE)) {
+          if (signal?.aborted) return "cancel";
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        unlinkSync(process.env.OFFLINE_IDLE_COMPACT_RELEASE);
+        appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_PREFLIGHT_COMPACT_CHOSEN\\n");
+        await new Promise((resolve, reject) => ctx.compact({
+          onComplete: resolve,
+          onError: reject,
+        }));
+        const entry = ctx.sessionManager.getBranch().findLast(item => item.type === "compaction");
+        if (ctx.sessionManager.getSessionId() !== sessionId || entry?.parentId !== leafId ||
+          ctx.sessionManager.getLeafId() !== entry.id) return "cancel";
+        appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_PREFLIGHT_COMPACTED\\n");
+        return "continue";
+      },
+      retainPrompt: async (payload, reason) => {
+        const waitMarker = process.env.OFFLINE_INPUT_RECEIPT + ".retain-wait";
+        if (existsSync(waitMarker)) {
+          writeFileSync(process.env.OFFLINE_INPUT_RECEIPT + ".retain-started", "started");
+          while (!existsSync(process.env.OFFLINE_INPUT_RECEIPT + ".retain-release")) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        }
+        const retained = JSON.stringify({ payload, reason });
+        writeFileSync(process.env.OFFLINE_INPUT_RECEIPT + ".retained", retained);
+        return true;
+      },
+    };
   });
   pi.on("agent_start", () => appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "AGENT_STARTED\\n"));
   pi.on("session_before_compact", event => {
@@ -85,6 +122,11 @@ export default function(pi) {
       }
       if (process.env.OFFLINE_REAL_IDLE_EXTENSION === "1" && existsSync(process.env.OFFLINE_REAL_IDLE_ACTIVE)) {
         appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE, "IDLE_COMPACTION_MODEL\\n");
+        const failureMarker = process.env.OFFLINE_INPUT_RECEIPT + ".real-idle-fail";
+        if (existsSync(failureMarker)) {
+          unlinkSync(failureMarker);
+          throw new Error("compaction aborted");
+        }
         appendFileSync(process.env.OFFLINE_LIFECYCLE_FILE + ".idle.compaction.calls", "summary\\n");
         const stream = createAssistantMessageEventStream();
         const message = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: "stop", content: [{ type: "text", text: "isolated valid compaction summary" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
@@ -196,9 +238,19 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
     defaultProvider: "bridge-offline", defaultModel: "first", defaultThinkingLevel: "low",
     packages: [], autoCompact: false,
   }));
-  if (process.env.BRIDGE_IDLE_CONTEXT_EXTENSION) await writeFile(path.join(agent, "idle-context-warning.json"), JSON.stringify({ idleMinutes: 1440, contextPercent: 100, cheapCompactionModel: "bridge-offline/second" }));
-  const session = path.join(temporary, "session.jsonl");
-  const socketPath = path.join(runtime, "pi-paseo", createHash("sha256").update(session).digest("hex").slice(0, 20) + ".sock");
+  const idleSettingsPath = path.join(agent, "idle-context-warning.json");
+  const defaultIdleSettings = {
+    idleMinutes: 1440,
+    contextPercent: 100,
+    cheapCompactionModel: "bridge-offline/second",
+  };
+  if (process.env.BRIDGE_IDLE_CONTEXT_EXTENSION) {
+    await writeFile(idleSettingsPath, JSON.stringify(defaultIdleSettings));
+  }
+  let session = path.join(temporary, "session.jsonl");
+  const pipePathForSession = (sessionPath: string) => path.join(runtime, "pi-paseo",
+    createHash("sha256").update(sessionPath).digest("hex").slice(0, 20) + ".sock");
+  let socketPath = pipePathForSession(session);
   const bridgeEntry = process.env.BRIDGE_NATIVE_EXTENSION ?? path.join(root, "extension/index.ts");
   t.diagnostic(`Pi executable: ${executable}; bridge entry: ${bridgeEntry}`);
   const child = spawn(executable!, ["--mode", "rpc", "--session", session,
@@ -678,6 +730,94 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
       assert.ok(compactionEvents.some(event => event.type === "compaction_end" && event.reason === "manual" && /Nothing to compact/i.test(event.errorMessage ?? "") && event.aborted === false));
       assert.ok(!(await readFile(path.join(temporary, "lifecycle"), "utf8")).includes("PROVIDER_CALLED"));
     });
+    await t.test("preflight errors retain prompts across bridge dispatch paths", {
+      skip: !!process.env.BRIDGE_IDLE_CONTEXT_EXTENSION,
+    }, async () => {
+      const image = { type: "image", data: "fixture-image", mimeType: "image/png" };
+      const retainedPath = path.join(temporary, "input-receipt.json.retained");
+      const cases = [
+        { command: "prompt", message: "keep prompt after compaction failure", images: [image] },
+        { command: "steer", message: "keep steer after compaction failure",
+          streamingBehavior: "steer" },
+        { command: "follow_up", message: "keep follow-up after compaction failure",
+          streamingBehavior: "followUp" },
+      ];
+      for (const item of cases) {
+        await rm(retainedPath, { force: true });
+        await writeFile(path.join(temporary, "input-receipt.json.fail"), "fail");
+        const { command, ...payload } = item;
+        const response = await bridge(command, payload);
+        assert.equal(response.success, false, JSON.stringify(response));
+        assert.match(response.error, /compaction interrupted/);
+        assert.doesNotMatch(response.error, /\babort(ed)?\b/i);
+        const retained = JSON.parse(await readFile(retainedPath, "utf8"));
+        assert.equal(retained.payload.text, item.message);
+        assert.equal(retained.payload.streamingBehavior, item.streamingBehavior);
+        assert.deepEqual(retained.payload.images ?? [], item.images ?? []);
+        assert.equal(retained.reason, "compaction interrupted");
+      }
+      await rm(retainedPath, { force: true });
+      await writeFile(path.join(temporary, "input-receipt.json.fail"), "fail");
+      await writeFile(path.join(temporary, "input-receipt.json.retain-wait"), "wait");
+      const pending = bridge("prompt", { message: "cancel while retaining prompt" });
+      const retainMarker = path.join(temporary, "input-receipt.json.retain-started");
+      await waitForFile(retainMarker, Date.now() + 4000);
+      await bridge("abort");
+      await writeFile(path.join(temporary, "input-receipt.json.retain-release"), "release");
+      const cancelled = await pending;
+      assert.equal(cancelled.success, false);
+      assert.equal(cancelled.error, "Request was aborted: prompt cancelled.");
+    });
+    await t.test("installed idle extension records a failed bridge prompt for recovery", {
+      skip: !process.env.BRIDGE_IDLE_CONTEXT_EXTENSION,
+    }, async () => {
+      const activeMarker = path.join(temporary, "real-idle-active");
+      const failureMarker = path.join(temporary, "input-receipt.json.real-idle-fail");
+      const settingsPath = path.join(agent, "idle-context-warning.json");
+      try {
+        await seedHistory("/offline-fixture-seed-idle-history");
+        await writeFile(settingsPath, JSON.stringify({
+          idleMinutes: 1,
+          contextPercent: 1,
+          cheapCompactionModel: "bridge-offline/second",
+        }));
+        await writeFile(activeMarker, "enabled");
+        await writeFile(failureMarker, "fail");
+        const image = { type: "image", data: "failure-image", mimeType: "image/png" };
+        const prompt = "real idle failure recovery fixture";
+        const pending = bridge("prompt", { message: prompt, images: [image] });
+        void pending.catch(() => {});
+        const deadline = Date.now() + 5000;
+        while (!dialogs.length) {
+          assert.ok(Date.now() < deadline, `real idle decision must appear: ${stderr}`);
+          await delay(10);
+        }
+        const request = dialogs.shift();
+        assert.equal(request.method, "select");
+        socket!.write(JSON.stringify({ type: "extension_ui_response", id: request.id,
+          value: "Compact" }) + "\n");
+        const response = await pending;
+        assert.equal(response.success, false, JSON.stringify(response));
+        assert.match(response.error, /Idle prompt compaction failed: Compaction cancelled\./);
+        assert.ok(response.error.includes("/idle-context recover"));
+        assert.doesNotMatch(response.error, /\babort(ed)?\b/i);
+        const sessionEntries = (await readFile(session, "utf8")).trim().split("\n");
+        const entries = sessionEntries.map(line => JSON.parse(line));
+        const failed = entries.findLast(entry => entry.type === "custom" &&
+          entry.customType === "idle-context-submission" && entry.data.state === "failed");
+        assert.ok(failed, "the real extension must persist a failed submission");
+        assert.equal(failed.data.text, prompt);
+        assert.deepEqual(failed.data.images, [image]);
+      } finally {
+        await rm(activeMarker, { force: true });
+        await rm(failureMarker, { force: true });
+        await writeFile(settingsPath, JSON.stringify({
+          idleMinutes: 1440,
+          contextPercent: 100,
+          cheapCompactionModel: "bridge-offline/second",
+        }));
+      }
+    });
     await t.test("idle Compact preflight delivers the original bridge prompt to the model after real Pi compaction", { skip: !!process.env.BRIDGE_IDLE_CONTEXT_EXTENSION }, async () => {
       await seedHistory("/offline-fixture-reset-compaction");
       await seedHistory("/offline-fixture-seed-compaction");
@@ -723,12 +863,19 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
       }
     });
     await t.test("installed idle-context-warning handles notification entries during compaction without stale prompt loss", { skip: !process.env.BRIDGE_IDLE_CONTEXT_EXTENSION }, async () => {
+      const activeMarker = path.join(temporary, "real-idle-active");
+      const injectedMarker = path.join(temporary, "inject-custom-entry");
+      try {
       try { await seedHistory("/offline-fixture-seed-idle-history"); }
       catch (error) { throw new Error(`idle test history seed failed: ${String(error)}\\n${stderr}`); }
-      await writeFile(path.join(agent, "idle-context-warning.json"), JSON.stringify({ idleMinutes: 1, contextPercent: 1, cheapCompactionModel: "bridge-offline/second" }));
-      await writeFile(path.join(temporary, "real-idle-active"), "enabled");
+      await writeFile(idleSettingsPath, JSON.stringify({
+        idleMinutes: 1,
+        contextPercent: 1,
+        cheapCompactionModel: "bridge-offline/second",
+      }));
+      await writeFile(activeMarker, "enabled");
       const injectBranchChange = process.env.BRIDGE_IDLE_INJECT_BRANCH_ENTRY === "1";
-      if (injectBranchChange) await writeFile(path.join(temporary, "inject-custom-entry"), "during compaction");
+      if (injectBranchChange) await writeFile(injectedMarker, "during compaction");
       const image = { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==", mimeType: "image/png" };
       const prompt = "idle compact model delivery fixture";
       const pending = bridge("prompt", { message: prompt, images: [image] });
@@ -774,11 +921,21 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
         assert.ok(Date.now() < idleDeadline, "original model turn settles before the next transport check");
         await delay(20);
       }
+      } finally {
+        await rm(activeMarker, { force: true });
+        await rm(injectedMarker, { force: true });
+        await writeFile(idleSettingsPath, JSON.stringify(defaultIdleSettings));
+      }
     });
     await t.test("installed idle-context-warning revokes pending admission on bridge disconnect and reconnect", { skip: !process.env.BRIDGE_IDLE_CONTEXT_EXTENSION }, async () => {
-      await writeFile(path.join(agent, "idle-context-warning.json"), JSON.stringify({ idleMinutes: 1440, contextPercent: 100, cheapCompactionModel: "bridge-offline/second" }));
+      try {
+      await writeFile(idleSettingsPath, JSON.stringify(defaultIdleSettings));
       await seedHistory("/offline-fixture-seed-idle-history");
-      await writeFile(path.join(agent, "idle-context-warning.json"), JSON.stringify({ idleMinutes: 1, contextPercent: 1, cheapCompactionModel: "bridge-offline/second" }));
+      await writeFile(idleSettingsPath, JSON.stringify({
+        idleMinutes: 1,
+        contextPercent: 1,
+        cheapCompactionModel: "bridge-offline/second",
+      }));
       await rm(path.join(temporary, "lifecycle.model.calls"), { force: true });
       const pending = bridge("prompt", { message: "idle compact model delivery fixture" });
       void pending.catch(() => {});
@@ -804,6 +961,10 @@ test("actual Pi executable and production bridge RPC", { skip: !executable, time
       const state = await ok("get_state");
       assert.equal(state.isStreaming, false);
       await assert.rejects(readFile(path.join(temporary, "lifecycle.model.calls")), { code: "ENOENT" }, "detached admission must not reach the model after reconnect");
+      } finally {
+        await rm(path.join(temporary, "real-idle-active"), { force: true });
+        await writeFile(idleSettingsPath, JSON.stringify(defaultIdleSettings));
+      }
     });
     await t.test("bridge-owned disconnect acknowledges acceptance, then closes only bridge transport", async () => {
       const closed = once(socket!, "close");
